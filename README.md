@@ -1,3 +1,16 @@
+---
+title: Tool Chain Env Environment Server
+emoji: 📸
+colorFrom: gray
+colorTo: yellow
+sdk: docker
+pinned: false
+app_port: 8000
+base_path: /web
+tags:
+  - openenv
+---
+
 # THIS IS TO BE DEVELOPED IN A PYTHON 3.11.0 ENVIRONMENT
 ```bash
 # Create a virtual environment
@@ -11,21 +24,6 @@ venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 ```
-
-
-
----
-title: Tool Chain Env Environment Server
-emoji: 📸
-colorFrom: gray
-colorTo: yellow
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
----
 
 # Tool Chain Env Environment
 
