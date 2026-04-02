@@ -1,3 +1,19 @@
+# THIS IS TO BE DEVELOPED IN A PYTHON 3.11.0 ENVIRONMENT
+```bash
+# Create a virtual environment
+py -3.11 -m venv venv
+
+# Activate the virtual environment
+# On Windows
+venv\Scripts\activate
+
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+
+
 ---
 title: Tool Chain Env Environment Server
 emoji: 📸
