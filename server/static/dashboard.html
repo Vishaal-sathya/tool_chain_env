@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TOOLCHAIN-ENV | AGENTIC OS</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --neon-cyan: #00f3ff;
+            --neon-border: rgba(0, 243, 255, 0.3);
+            --glass-bg: rgba(10, 15, 25, 0.85);
+            --bg-deep: #05080f;
+            --glow-shadow: 0 0 20px rgba(0, 243, 255, 0.2);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg-deep);
+            color: #e0e6ed;
+            font-family: 'Outfit', sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            background-image: 
+                radial-gradient(circle at 50% 50%, rgba(0, 243, 255, 0.05) 0%, transparent 70%),
+                linear-gradient(rgba(0, 243, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 243, 255, 0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 40px 40px, 40px 40px;
+        }
+
+        /* HEADER */
+        header {
+            padding: 20px 40px;
+            background: rgba(0, 0, 0, 0.6);
+            border-bottom: 1px solid var(--neon-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(10px);
+        }
+
+        .brand {
+            font-weight: 900;
+            letter-spacing: 4px;
+            font-size: 24px;
+            color: var(--neon-cyan);
+            text-shadow: 0 0 10px var(--neon-cyan);
+        }
+
+        .status-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            padding: 4px 12px;
+            border: 1px solid var(--neon-cyan);
+            border-radius: 4px;
+            background: rgba(0, 243, 255, 0.1);
+        }
+
+        /* GRID LAYOUT */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 280px 1fr 400px;
+            grid-template-rows: auto 1fr;
+            gap: 20px;
+            padding: 20px;
+            height: calc(100vh - 80px);
+        }
+
+        .card {
+            background: var(--glass-bg);
+            border: 1px solid var(--neon-border);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(20px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+        }
+
+        .card-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--neon-cyan);
+            margin-bottom: 15px;
+            letter-spacing: 1px;
+            display: block;
+        }
+
+        /* METRICS */
+        .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .metric-box {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 8px;
+        }
+        .metric-value { font-size: 28px; font-weight: 700; color: #fff; }
+
+        /* LOGS */
+        .log-container {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: #8892b0;
+            overflow-y: auto;
+            height: calc(100% - 30px);
+            line-height: 1.6;
+        }
+        .log-entry { margin-bottom: 8px; opacity: 0; animation: fadeIn 0.3s forwards; }
+        .log-time { color: #555e7d; margin-right: 10px; }
+        .log-action { color: #00f3ff; font-weight: bold; }
+        .log-status { color: #50fa7b; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* WAVEFORM */
+        .viz-container { height: 180px; display: flex; align-items: flex-end; gap: 2px; }
+        .viz-bar { flex: 1; background: var(--neon-cyan); opacity: 0.3; transition: height 0.2s ease; }
+
+        /* MISSION INFO */
+        .mission-panel { grid-column: span 3; display: flex; justify-content: space-between; align-items: center; }
+        .mission-title { font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+        .mission-score { font-family: 'JetBrains Mono', monospace; color: var(--neon-cyan); font-size: 24px; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">AGENTIC_CORE.OS</div>
+        <div style="display:flex; gap: 20px; align-items:center;">
+            <div class="status-badge">PROTOCOL: TOOLCHAIN_ENV_v1.0</div>
+            <div class="status-badge" style="border-color: #50fa7b; color: #50fa7b;">STATUS: READY</div>
+        </div>
+    </header>
+
+    <main class="dashboard-grid">
+        <div class="mission-panel card" style="padding: 10px 40px;">
+            <div>
+                <span class="card-label">ORCHESTRATION_TASK</span>
+                <div class="mission-title" id="mission-name">INITIALIZING...</div>
+            </div>
+            <div style="text-align: right;">
+                <span class="card-label">OBJECTIVE_SCORE</span>
+                <div class="mission-score" id="mission-score">0.0</div>
+            </div>
+            <div style="text-align: right;">
+                <span class="card-label">IO_THROUGHPUT</span>
+                <div class="mission-score" id="io-steps">0/10</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <span class="card-label">SERVICE_MESH</span>
+            <div class="metric-grid">
+                <div class="metric-box">
+                    <span class="card-label" style="font-size: 8px;">AUTH TOKENS</span>
+                    <div class="metric-value" id="count-tokens">0</div>
+                </div>
+                <div class="metric-box">
+                    <span class="card-label" style="font-size: 8px;">REFUNDS</span>
+                    <div class="metric-value" id="count-refunds">0</div>
+                </div>
+            </div>
+            <div class="metric-box" style="margin-top: 20px; border-color: var(--neon-border);">
+                <span class="card-label" style="font-size: 8px;">SYSTEM HEALTH</span>
+                <div style="color: #50fa7b; font-weight: bold; font-family: 'JetBrains Mono'; font-size: 12px;">CRYPTO_SYNC [OK]</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <span class="card-label">DISCOVERY_STREAM</span>
+            <div class="log-container" id="discovery-stream">
+                <div class="log-entry"><span class="log-time">>></span> System Boot <span style="float:right; color:#50fa7b;">OK</span></div>
+                <div class="log-entry"><span class="log-time">>></span> Auth Module <span style="float:right; color:#00f3ff;">READY</span></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <span class="card-label">OS_LATENCY_VECTOR</span>
+            <div class="viz-container" id="latency-viz"></div>
+        </div>
+
+        <div class="card" style="grid-column: span 3; height: 320px; flex-shrink: 0;">
+            <span class="card-label">AGENT_ORCHESTRATION_LOGS</span>
+            <div class="log-container" id="event-logs" style="height: 260px;">
+                <!-- Data injected here -->
+            </div>
+            <div style="position:absolute; top: 20px; right: 20px; font-family: 'JetBrains Mono'; font-size: 8px; opacity: 0.5;">LATEST_EVENTS_TOP</div>
+        </div>
+    </main>
+
+    <script>
+        const latencyViz = document.getElementById('latency-viz');
+        const logContainer = document.getElementById('event-logs');
+        
+        // Initialize Viz
+        for(let i=0; i<80; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'viz-bar';
+            bar.style.height = (20 + Math.random() * 60) + 'px';
+            latencyViz.appendChild(bar);
+        }
+
+        function updateViz() {
+            const bars = document.querySelectorAll('.viz-bar');
+            bars.forEach(bar => {
+                const newHeight = (20 + Math.random() * 80) + 'px';
+                bar.style.height = newHeight;
+            });
+        }
+        setInterval(updateViz, 150);
+
+        async function pollState() {
+            try {
+                const res = await fetch('/api/debug/state');
+                const state = await res.json();
+                
+                document.getElementById('count-tokens').innerText = state.tokens;
+                document.getElementById('count-refunds').innerText = state.refunds;
+
+                if (state.latest_observation) {
+                    const obs = state.latest_observation.observation;
+                    document.getElementById('mission-name').innerText = obs.task_objective || 'ACTIVE MISSION';
+                    document.getElementById('mission-score').innerText = (obs.score || 0).toFixed(1);
+                    document.getElementById('io-steps').innerText = `${obs.step_count || 0}/10`;
+                }
+
+                if (state.latest_action) {
+                    const time = new Date().toLocaleTimeString().toLowerCase();
+                    const entry = document.createElement('div');
+                    entry.className = 'log-entry';
+                    const act = state.latest_action.action || state.latest_action;
+                    const status = state.latest_observation ? state.latest_observation.observation.status_code : '---';
+                    
+                    entry.innerHTML = `<span class="log-time">[${time}]</span> 
+                                       <span class="log-action">${act.method || 'GET'}</span> 
+                                       <code>${act.endpoint || '/'}</code> 
+                                       <span class="log-status" style="float:right;">→ ${status}</span>`;
+                    
+                    logContainer.prepend(entry);
+                    if (logContainer.children.length > 20) logContainer.lastChild.remove();
+                }
+            } catch (e) { console.error("OS SYNC ERROR", e); }
+        }
+
+        setInterval(pollState, 2000);
+    </script>
+</body>
+</html>

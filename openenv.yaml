@@ -1,0 +1,21 @@
+name: toolchain-env
+version: "1.0.0"
+description: "A mock REST API sandbox for training and evaluating tool-calling AI agents"
+entry_point: "server.main:app"
+tasks:
+  - id: "task1"
+    name: "The Data Fetch"
+    difficulty: "easy"
+  - id: "task2"
+    name: "The Distributed Transaction"
+    difficulty: "medium"
+  - id: "task3"
+    name: "Rate Limit and Pagination"
+    difficulty: "hard"
+observation_space:
+  type: "dict"
+  description: "HTTP status code, response JSON, API docs, step count, history"
+action_space:
+  type: "dict"
+  description: "HTTP method, endpoint, headers, body"
+reward_range: [0.0, 1.0]
