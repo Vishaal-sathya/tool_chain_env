@@ -58,6 +58,7 @@ class StandaloneEnv:
         self.history = []
         self.log_calls = 0
         self.gathered_logs = 0
+        self.reauth_cleared = False
         
         mission_desc = {
             "task1": "Authenticate as root/admin and fetch profile for User 42.",
@@ -107,12 +108,14 @@ class StandaloneEnv:
         if ep == "/api/auth" and method == "POST":
             if body.get("username") == "root" and body.get("password") == "admin":
                 GlobalState.TOKENS += 1
+                if getattr(self, "log_calls", 0) >= 2:
+                    self.reauth_cleared = True
                 return {"token": "Bearer abc123_token"}, 200
             return error_hint("Invalid auth", 401)
         
         if "/api/crm/users/" in ep:
             # Check for generic unauthorized or specific expiration
-            is_expired = (self.task_id == "task3" and self.log_calls >= 2)
+            is_expired = (self.task_id == "task3" and self.log_calls >= 2 and not getattr(self, "reauth_cleared", False))
             if headers.get("authorization") != "Bearer abc123_token" or is_expired:
                 h = "Your token has expired. Re-authenticate now." if is_expired else "Check /api/docs"
                 return {"error": "Unauthorized", "hint": h, "docs_url": "/api/docs"}, 401
@@ -134,13 +137,10 @@ class StandaloneEnv:
 
         if "/api/logs" in ep:
             # --- NOVELTY 2: MID-TASK FAILURE & SELF-RECOVERY ---
-            # After 2 calls, the token "expires" (forces 401 above)
-            if self.log_calls >= 2:
-                # Force the check by hitting the 'auth' guard above
-                pass 
+            is_expired = (self.task_id == "task3" and self.log_calls >= 2 and not getattr(self, "reauth_cleared", False))
             
             # Auth guard check
-            if headers.get("authorization") != "Bearer abc123_token" or (self.task_id == "task3" and self.log_calls >= 2):
+            if headers.get("authorization") != "Bearer abc123_token" or is_expired:
                 return {"error": "Unauthorized", "hint": "Critical: Token Expired Mid-Task. Re-auth to continue ingestion.", "docs_url": "/api/docs"}, 401
                 
             self.log_calls += 1
