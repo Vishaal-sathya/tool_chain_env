@@ -2,6 +2,7 @@ import os
 import json
 import time
 import random
+import string
 from typing import Optional, List, Any, Dict
 from pydantic import BaseModel
 from fastapi import FastAPI, Request, HTTPException
@@ -39,7 +40,7 @@ class StandaloneEnv:
         
         4. PAYMENT SERVICE: POST /api/payments/refund
            - Headers: {"X-Idempotency-Key": "unique_string"}
-           - Body: {"order_id": "ORD-5519"}
+           - Body: {"order_id": "<order_id>"}
            - Returns: 201 Created
         
         5. LOG SERVICE: GET /api/logs?cursor={n}
@@ -60,9 +61,12 @@ class StandaloneEnv:
         self.gathered_logs = 0
         self.reauth_cleared = False
         
+        self.target_user_id = str(random.randint(1, 999))
+        self.target_order_id = "".join(random.choices(string.ascii_uppercase, k=3)) + "-" + "".join(random.choices(string.digits, k=4))
+        
         mission_desc = {
-            "task1": "Authenticate as root/admin and fetch profile for User 42.",
-            "task2": "Process a refund for order ORD-5519 using a unique Idempotency Key.",
+            "task1": f"Authenticate as root/admin and fetch profile for User {self.target_user_id}.",
+            "task2": f"Process a refund for order {self.target_order_id} using a unique Idempotency Key.",
             "task3": "Aggregate all 10 system logs using pagination and handling 429 errors."
         }
         self.task_objective = mission_desc.get(self.task_id, "Unknown Objective")
@@ -120,12 +124,12 @@ class StandaloneEnv:
                 h = "Your token has expired. Re-authenticate now." if is_expired else "Check /api/docs"
                 return {"error": "Unauthorized", "hint": h, "docs_url": "/api/docs"}, 401
             u_id = ep.split("/")[-1]
-            if u_id == "42": return {"id": 42, "name": "Alice Smith"}, 200
+            if u_id == getattr(self, "target_user_id", "42"): return {"id": int(u_id), "name": f"Dynamic User {u_id}"}, 200
             return error_hint("Not Found", 404)
 
         if "/api/orders/" in ep:
-            o_id = ep.split("/")[-1]
-            if o_id == "ord-5519": return {"id": "ORD-5519", "eligible_for_return": True}, 200
+            o_id = ep.split("/")[-1].upper()
+            if o_id == getattr(self, "target_order_id", "ORD-5519"): return {"id": getattr(self, "target_order_id", "ORD-5519"), "eligible_for_return": True}, 200
             return error_hint("Not Found", 404)
 
         if ep == "/api/payments/refund" and method == "POST":
@@ -153,11 +157,12 @@ class StandaloneEnv:
     def _update_score(self, method, endpoint, headers, res_data, status):
         ep = endpoint.lower().strip()
         if self.task_id == "task1":
-            if status == 200 and "/api/crm/users/42" in ep: self.score = 1.0
+            if status == 200 and f"/api/crm/users/{getattr(self, 'target_user_id', '42')}" in ep: self.score = 1.0
             elif any("200" in h and "/api/auth" in h for h in self.history): self.score = max(self.score, 0.5)
         elif self.task_id == "task2":
+            target_order_id_lower = getattr(self, "target_order_id", "ORD-5519").lower()
             if status == 201 and ep == "/api/payments/refund" and "x-idempotency-key" in headers: self.score = 1.0
-            elif any("200" in h and "/api/orders/ord-5519" in h.lower() for h in self.history): self.score = max(self.score, 0.3)
+            elif any("200" in h and f"/api/orders/{target_order_id_lower}" in h.lower() for h in self.history): self.score = max(self.score, 0.3)
         elif self.task_id == "task3":
             if self.gathered_logs >= 10: self.score = 1.0
             elif status == 429: self.score = max(self.score, 0.4)
@@ -243,22 +248,29 @@ async def chat_completions(req: Request):
         return {"choices": [{"message": {"content": json.dumps({"action": action})}}]}
 
     # Precise discrimination
-    is_task1 = "user 42" in prompt
-    is_task2 = "ord-5519" in prompt or "refund" in prompt
+    import re
+    task1_match = re.search(r"user (\d+)", prompt)
+    is_task1 = bool(task1_match)
+    target_user_id = task1_match.group(1) if is_task1 else "42"
+    
+    task2_match = re.search(r"order ([a-z0-9-]+)", prompt)
+    is_task2 = bool(task2_match) or "refund" in prompt
+    target_order_id = task2_match.group(1).upper() if task2_match else "ORD-5519"
+
     is_task3 = "logs" in prompt or "pagination" in prompt
 
     if is_task1:
         if "bearer" not in prompt:
             action = {"method": "POST", "endpoint": "/api/auth", "body": {"username": "root", "password": "admin"}}
         else:
-            action = {"method": "GET", "endpoint": "/api/crm/users/42", "headers": {"Authorization": "Bearer abc123_token"}}
+            action = {"method": "GET", "endpoint": f"/api/crm/users/{target_user_id}", "headers": {"Authorization": "Bearer abc123_token"}}
     elif is_task2:
         if "bearer" not in prompt:
             action = {"method": "POST", "endpoint": "/api/auth", "body": {"username": "root", "password": "admin"}}
-        elif "amount" not in prompt:
-            action = {"method": "GET", "endpoint": "/api/orders/ORD-5519", "headers": {"Authorization": "Bearer abc123_token"}}
+        elif "amount" not in prompt and "eligible_for_return" not in prompt:
+            action = {"method": "GET", "endpoint": f"/api/orders/{target_order_id}", "headers": {"Authorization": "Bearer abc123_token"}}
         else:
-            action = {"method": "POST", "endpoint": "/api/payments/refund", "headers": {"X-Idempotency-Key": "REF-123", "Authorization": "Bearer abc123_token"}, "body": {"order_id": "ORD-5519"}}
+            action = {"method": "POST", "endpoint": "/api/payments/refund", "headers": {"X-Idempotency-Key": "REF-123", "Authorization": "Bearer abc123_token"}, "body": {"order_id": target_order_id}}
     elif is_task3:
         cursor = 0
         if "next_cursor: 5" in prompt: cursor = 5
@@ -275,7 +287,7 @@ def list_tasks():
         {
             "id": "task1",
             "difficulty": "easy",
-            "description": "Authenticate as root/admin and fetch profile for User 42.",
+            "description": "Authenticate as root/admin and fetch profile for the User specified in the prompt.",
             "max_steps": 10,
             "action_schema": {
                 "type": "object",
@@ -291,7 +303,7 @@ def list_tasks():
         {
             "id": "task2",
             "difficulty": "medium",
-            "description": "Process a refund for order ORD-5519 using a unique Idempotency Key.",
+            "description": "Process a refund for the Order specified in the prompt using a unique Idempotency Key.",
             "max_steps": 10,
             "action_schema": {
                 "type": "object",
