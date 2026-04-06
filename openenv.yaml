@@ -2,6 +2,5 @@ spec_version: 1
 name: tool_chain_env
 type: space
 runtime: fastapi
-app: server.app:app
+app: server.main:app
 port: 8000
-

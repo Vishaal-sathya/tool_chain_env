@@ -267,6 +267,101 @@ async def chat_completions(req: Request):
         
     return {"choices": [{"message": {"content": json.dumps({"action": action})}}]}
 
+# ── OpenENV required endpoints ────────────────────────────────
+
+@app.get("/tasks")
+def list_tasks():
+    return JSONResponse(content=[
+        {
+            "id": "task1",
+            "difficulty": "easy",
+            "description": "Authenticate as root/admin and fetch profile for User 42.",
+            "max_steps": 10,
+            "action_schema": {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                    "endpoint": {"type": "string"},
+                    "headers": {"type": "object"},
+                    "body": {"type": "object"}
+                },
+                "required": ["method", "endpoint"]
+            }
+        },
+        {
+            "id": "task2",
+            "difficulty": "medium",
+            "description": "Process a refund for order ORD-5519 using a unique Idempotency Key.",
+            "max_steps": 10,
+            "action_schema": {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                    "endpoint": {"type": "string"},
+                    "headers": {"type": "object"},
+                    "body": {"type": "object"}
+                },
+                "required": ["method", "endpoint"]
+            }
+        },
+        {
+            "id": "task3",
+            "difficulty": "hard",
+            "description": "Aggregate all 10 system logs using pagination and handling 429 rate limit errors.",
+            "max_steps": 10,
+            "action_schema": {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                    "endpoint": {"type": "string"},
+                    "headers": {"type": "object"},
+                    "body": {"type": "object"}
+                },
+                "required": ["method", "endpoint"]
+            }
+        }
+    ])
+
+@app.post("/grader")
+def grader(task_id: str = "task1"):
+    score = round(min(1.0, max(0.0, env.score)), 4)
+    return JSONResponse(content={"score": score, "task_id": task_id})
+
+@app.post("/reset_task")
+def reset_task(task_id: str = "task1"):
+    result = env.reset(task_id)
+    return JSONResponse(content=result)
+
+@app.post("/step_task")
+async def step_task(request: Request):
+    body = await request.json()
+    action_dict = body.get("action", body)
+    obs, reward, done, info = env.step(action_dict)
+    return JSONResponse(content={
+        "observation": obs["observation"],
+        "reward": reward,
+        "done": done,
+        "info": info
+    })
+@app.post("/baseline")
+def baseline():
+    import subprocess
+    result = subprocess.run(
+        ["python", "-m", "baseline.run_baseline"],
+        capture_output=True, text=True, timeout=300,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    scores = {}
+    for line in result.stdout.splitlines():
+        if line.startswith("SCORE:"):
+            parts = line.split(":")
+            if len(parts) >= 3:
+                scores[parts[1]] = float(parts[2])
+    return JSONResponse(content={
+        "scores": scores,
+        "raw_output": result.stdout,
+        "errors": result.stderr
+    })
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=7860)
