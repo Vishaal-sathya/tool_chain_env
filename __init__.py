@@ -6,11 +6,9 @@
 
 """Tool Chain Env Environment."""
 
-from .client import ToolChainEnv
 from .models import ToolChainAction, ToolChainObservation
 
 __all__ = [
     "ToolChainAction",
     "ToolChainObservation",
-    "ToolChainEnv",
 ]

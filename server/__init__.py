@@ -5,7 +5,3 @@
 # LICENSE file in the root directory of this source tree.
 
 """Tool Chain Env environment server components."""
-
-from .tool_chain_env_environment import ToolChainEnvironment
-
-__all__ = ["ToolChainEnvironment"]

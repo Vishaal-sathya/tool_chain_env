@@ -1,27 +1,51 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
-"""
-Data models for the Tool Chain Env Environment.
-
-The tool_chain_env environment is a simple test environment that echoes back messages.
-"""
-
-from openenv.core.env_server.types import Action, Observation
-from pydantic import Field
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, Dict, Any, List
 
 
-class ToolChainAction(Action):
-    """Action for the Tool Chain Env environment - just a message to echo."""
+class ToolChainAction(BaseModel):
+    """
+    Represents one HTTP call the agent wants to make.
+    WAIT is a no-op used for rate-limit backoff.
+    """
+    method: Literal["GET","POST","PUT","PATCH","DELETE","WAIT"] = Field(
+        ..., description="HTTP method or WAIT for backoff"
+    )
+    endpoint: str = Field(
+        default="", description="Target path e.g. /api/auth or /api/orders/ORD-001"
+    )
+    headers: Dict[str, str] = Field(
+        default_factory=dict,
+        description="HTTP headers including Authorization, Content-Type, Idempotency-Key"
+    )
+    body: Optional[Dict[str, Any]] = Field(
+        default=None, description="JSON body for POST/PUT/PATCH"
+    )
 
-    message: str = Field(..., description="Message to echo back")
+class ToolChainObservation(BaseModel):
+    """What the agent sees after each step."""
+    status_code: int = Field(default=0, description="HTTP status: 200,201,400,401,404,429,500")
+    response_data: Dict[str, Any] = Field(
+        default_factory=dict, description="Parsed JSON response body"
+    )
+    simulated_latency_ms: float = Field(
+        default=0.0, description="Simulated call latency — reward penalises high values"
+    )
+    task_description: str = Field(
+        default="", description="Natural language goal for this episode"
+    )
+    api_docs: str = Field(
+        default="", description="Available endpoints and their schemas"
+    )
+    step_budget_remaining: int = Field(default=0)
+    rate_limit_reset_in: int = Field(
+        default=0, description="Steps until rate limit resets (0 = not limited)"
+    )
+    episode_log: List[Dict[str, Any]] = Field(
+        default_factory=list, description="History of all calls made this episode"
+    )
 
 
-class ToolChainObservation(Observation):
-    """Observation from the Tool Chain Env environment - the echoed message."""
-
-    echoed_message: str = Field(default="", description="The echoed message")
-    message_length: int = Field(default=0, description="Length of the echoed message")
+class State(BaseModel):
+    """Minimal state object for the environment."""
+    episode_id: str = ""
+    step_count: int = 0

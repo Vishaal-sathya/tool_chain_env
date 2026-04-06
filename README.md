@@ -1,269 +1,220 @@
----
-title: Tool Chain Env Environment Server
-emoji: 📸
-colorFrom: gray
-colorTo: yellow
-sdk: docker
-pinned: false
-app_port: 8000
-base_path: /web
-tags:
-  - openenv
+# ToolChain-Env
+
+A reinforcement learning environment for training and evaluating LLM agents on real-world API orchestration tasks. The agent interacts with a mock internet — a set of REST and GraphQL endpoints — by composing HTTP requests, handling authentication, managing distributed transactions, and navigating rate limits with pagination.
+
+Built for the Meta x HuggingFace OpenENV Hackathon.
+
 ---
 
-# THIS IS TO BE DEVELOPED IN A PYTHON 3.11.0 ENVIRONMENT
+## Why this exists
+
+Training agents to use external tools reliably is one of the hardest open problems in LLM research right now. Benchmarks like ToolBench and APIBench evaluate agents on fixed datasets, but they cannot be used as RL training environments — there is no step/reset loop, no shaped reward, no episodic structure.
+
+ToolChain-Env fills that gap. Every task runs against a deterministic mock API server, so episodes are reproducible, graders are exact, and there is no rate-limit cost or API key required to train at scale. The environment is language-agnostic: any agent that can emit a JSON payload can participate.
+
+---
+
+## Environment overview
+
+The agent acts as a client navigating a network of mock REST and GraphQL services. On each step it outputs a structured HTTP action. The environment routes that action to the mock server, returns the response as an observation, and computes a shaped reward based on correctness, efficiency, and security hygiene.
+
+The mock server runs inside the same process — no external services, no Docker-compose, no network calls outside the container.
+
+---
+
+## Action space
+
+Every action is a dictionary with four fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `method` | string | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `WAIT` |
+| `endpoint` | string | Target path, e.g. `/api/auth` or `/api/orders/ORD-5519` |
+| `headers` | dict | Key-value pairs — Authorization, Content-Type, Idempotency-Key |
+| `body` | dict or null | JSON payload for POST/PUT/PATCH requests |
+
+`WAIT` is a no-op action used to back off during rate limiting. The agent receives a small positive reward for using WAIT correctly after a 429 response.
+
+**Example action:**
+```json
+{
+  "method": "POST",
+  "endpoint": "/api/payments/refund",
+  "headers": {
+    "Authorization": "Bearer tok_abc123",
+    "Idempotency-Key": "req_9982",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "order_id": "ORD-5519",
+    "reason": "customer_requested"
+  }
+}
+```
+
+---
+
+## Observation space
+
+After each step the agent receives:
+
+| Field | Type | Description |
+|---|---|---|
+| `status_code` | int | HTTP status — 200, 201, 400, 401, 404, 429 |
+| `response_data` | dict | Parsed JSON response body |
+| `simulated_latency_ms` | float | Artificial latency injected by the environment |
+| `task_description` | string | Natural language goal for this episode |
+| `api_docs` | string | Available endpoints and their request schemas |
+| `step_budget_remaining` | int | Steps left before forced episode termination |
+| `rate_limit_reset_in` | int | Steps to wait before rate limit resets (0 = clear) |
+| `episode_log` | list | Last 5 actions and their outcomes |
+
+**Example observation:**
+```json
+{
+  "status_code": 201,
+  "response_data": {
+    "success": true,
+    "refund_id": "REF-ORD-5519",
+    "amount": 49.99,
+    "status": "processing"
+  },
+  "simulated_latency_ms": 142.5,
+  "task_description": "Process a refund for order ORD-5519 with idempotency guarantees.",
+  "step_budget_remaining": 6,
+  "rate_limit_reset_in": 0
+}
+```
+
+---
+
+## Tasks
+
+### Task 1 — The Data Fetch `[easy]`
+
+The agent must authenticate against `/api/auth` using provided credentials, obtain a Bearer token, and use it to retrieve a specific user profile from `/api/crm/users/{id}`.
+
+**Grader checkpoints:**
+
+| Score | Condition |
+|---|---|
+| 0.0 | Failed to authenticate or retrieve a token |
+| 0.3 | Obtained token but never called the CRM endpoint |
+| 0.5 | Called CRM but received 400 or 404 (wrong URL or missing token) |
+| 1.0 | Retrieved the correct user profile successfully |
+
+**Max steps:** 8
+
+---
+
+### Task 2 — The Distributed Transaction `[medium]`
+
+The agent must authenticate, query `/api/orders/{order_id}` to retrieve an order and verify refund eligibility, then POST to `/api/payments/refund` with the correct JSON body **and** an `Idempotency-Key` header to prevent double-charging.
+
+**Grader checkpoints:**
+
+| Score | Condition |
+|---|---|
+| 0.0 | Did nothing meaningful or crashed on first call |
+| 0.3 | Retrieved order data but never attempted a refund |
+| 0.8 | Refund processed successfully but Idempotency-Key was missing |
+| 1.0 | Refund processed with correct Idempotency-Key header |
+
+The 0.8 checkpoint specifically tests whether the agent understands distributed systems safety — processing a payment without idempotency protection is a real production risk.
+
+**Max steps:** 12
+
+---
+
+### Task 3 — Rate-Limit Evasion and GraphQL Pagination `[hard]`
+
+The agent must authenticate and then extract the full set of system logs from a GraphQL endpoint that enforces strict rate limiting (maximum 3 calls per 5-step window, returning 429 on violation) and requires cursor-based pagination to retrieve all records.
+
+**Grader checkpoints:**
+
+| Score | Condition |
+|---|---|
+| 0.0 | Spammed the endpoint and got blocked, collected no logs |
+| 0.4 | Handled rate limiting with WAIT actions but failed to paginate |
+| 0.7 | Paginated through some pages but stopped before the final cursor |
+| 1.0 | Collected every log entry across all pages |
+
+**Max steps:** 30
+
+---
+
+## Reward function
+
+Reward is shaped at every step — not just at episode end.
+
+| Signal | Reward |
+|---|---|
+| Successful API call (200/201) | +0.15 |
+| Correct Idempotency-Key on refund | +0.20 |
+| WAIT used correctly after 429 | +0.05 |
+| Rate limited (429) — should have waited | -0.10 |
+| Auth error (401) — forgot token | -0.08 |
+| Malformed request (400/404) | -0.05 |
+| WAIT used when not rate-limited | -0.05 |
+| Time step cost (every step) | -0.01 |
+| Terminal bonus | grade_score × 0.5 |
+
+The terminal bonus is a scaled version of the episode grader score, so the shaped reward and final grade are always consistent.
+
+---
+
+## Setup
+
+**Requirements:** Python 3.11, Docker
 ```bash
-# Create a virtual environment
+# Clone and set up environment
+git clone https://github.com/Vishaal-sathya/tool_chain_env
+cd tool_chain_env
+
 py -3.11 -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Mac/Linux
 
-# Activate the virtual environment
-# On Windows
-venv\Scripts\activate
-
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-# Tool Chain Env Environment
-
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
-
-## Quick Start
-
-The simplest way to use the Tool Chain Env environment is through the `ToolChainEnv` class:
-
-```python
-from tool_chain_env import ToolChainAction, ToolChainEnv
-
-try:
-    # Create environment from Docker image
-    tool_chain_envenv = ToolChainEnv.from_docker_image("tool_chain_env-env:latest")
-
-    # Reset
-    result = tool_chain_envenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = tool_chain_envenv.step(ToolChainAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    tool_chain_envenv.close()
-```
-
-That's it! The `ToolChainEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
-
-## Building the Docker Image
-
-Before using the environment, you need to build the Docker image:
-
+**Run locally:**
 ```bash
-# From project root
-docker build -t tool_chain_env-env:latest -f server/Dockerfile .
+uvicorn server.app:app --reload --port 8000
 ```
 
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
+**Run with Docker:**
 ```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
+docker build -t tool-chain-env -f server/Dockerfile .
+docker run -p 8000:8000 -e OPENAI_API_KEY=sk-... tool-chain-env
 ```
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
+---
 
-### Prerequisites
+## API reference
 
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
+Once running, all endpoints are available at `http://localhost:8000`.
 
-### Options
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/health` | Health check — returns `{"status":"ok"}` |
+| GET | `/tasks` | List all tasks with action schema |
+| POST | `/reset_task?task_id=data_fetch` | Start a new episode |
+| POST | `/step_task?task_id=data_fetch` | Submit one action |
+| GET | `/state_task?task_id=data_fetch` | Current episode state |
+| POST | `/grader?task_id=data_fetch` | Episode score (0.0–1.0) |
+| POST | `/baseline` | Run full baseline script, returns all scores |
 
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
+**Full API docs** (Swagger UI): `http://localhost:8000/docs`
 
-### Examples
+---
 
+## Running the baseline
 ```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
+export OPENAI_API_KEY=sk-your-key-here
+export ENV_BASE_URL=http://localhost:8000
 
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
+python -m baseline.run_baseline
 ```
 
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**ToolChainAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**ToolChainObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Tool Chain Env environment server running, you can connect directly:
-
-```python
-from tool_chain_env import ToolChainEnv
-
-# Connect to existing server
-tool_chain_envenv = ToolChainEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = tool_chain_envenv.reset()
-result = tool_chain_envenv.step(ToolChainAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `tool_chain_envenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from tool_chain_env import ToolChainAction, ToolChainEnv
-
-# Connect with context manager (auto-connects and closes)
-with ToolChainEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(ToolChainAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    ToolChainEnvironment,  # Pass class, not instance
-    ToolChainAction,
-    ToolChainObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from tool_chain_env import ToolChainAction, ToolChainEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with ToolChainEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(ToolChainAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
-```bash
-# From the server directory
-python3 server/tool_chain_env_environment.py
-```
-
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-uvicorn server.app:app --reload
-```
-
-## Project Structure
-
-```
-tool_chain_env/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # ToolChainEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── tool_chain_env_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
-```
+**Expected output:**
