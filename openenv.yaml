@@ -1,6 +1,63 @@
 spec_version: 1
 name: tool_chain_env
+display_name: "ToolChain-Env: API Orchestration RL Environment"
+description: >
+  A reinforcement learning environment for training LLM agents on real-world
+  API orchestration tasks — authentication flows, distributed transactions with
+  idempotency guarantees, and rate-limited paginated data retrieval.
 type: space
 runtime: fastapi
-app: server.main:app
+app: app:app
 port: 8000
+author: Vishaal-sathya
+version: "1.0.0"
+
+env_vars:
+  - name: API_BASE_URL
+    description: "LLM inference endpoint"
+    required: false
+  - name: MODEL_NAME
+    description: "Model identifier for inference"
+    required: false
+  - name: HF_TOKEN
+    description: "HuggingFace API token"
+    required: false
+
+tasks:
+  - id: task1
+    name: "The Data Fetch"
+    difficulty: easy
+    max_steps: 8
+    description: "Authenticate and retrieve a CRM user profile using Bearer token auth"
+
+  - id: task2
+    name: "The Distributed Transaction"
+    difficulty: medium
+    max_steps: 12
+    description: "Process a payment refund with idempotency-key protection"
+
+  - id: task3
+    name: "Rate-Limit Evasion and Pagination"
+    difficulty: hard
+    max_steps: 30
+    description: "Collect all paginated logs while respecting strict rate limits"
+
+action_space:
+  type: object
+  fields:
+    method: {type: string, enum: [GET, POST, PUT, PATCH, DELETE, WAIT]}
+    endpoint: {type: string}
+    headers: {type: object}
+    body: {type: object, nullable: true}
+
+observation_space:
+  type: object
+  fields:
+    status_code: {type: integer}
+    response_data: {type: object}
+    simulated_latency_ms: {type: float}
+    task_description: {type: string}
+    api_docs: {type: string}
+    step_budget_remaining: {type: integer}
+    rate_limit_reset_in: {type: integer}
+    episode_log: {type: array}
