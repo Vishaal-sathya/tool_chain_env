@@ -8,12 +8,14 @@ def grade_episode(env: "ToolChainEnvironment") -> float:
     log  = env._log
     store = mock_api._store
 
-    if task == "data_fetch":
+    if task == "task1":
         return _grade_data_fetch(log, store, env._episode_data)
-    if task == "distributed_transaction":
+    if task == "task2":
         return _grade_transaction(log, store)
-    if task == "rate_limit_graphql":
+    if task == "task3":
         return _grade_graphql(log, store, env._episode_data)
+    if task == "task4":
+        return _grade_webhook(log, store)
     return 0.0
 
 def _grade_data_fetch(log, store, episode_data) -> float:
@@ -78,4 +80,43 @@ def _grade_graphql(log, store, episode_data) -> float:
         return 0.4 if used_wait else 0.3
     if collected < total_logs:
         return 0.7
-    return 1.0  
+    return 1.0
+
+
+def _grade_webhook(log, store) -> float:
+    """
+    0.0 — nothing or crash
+    0.2 — authenticated but never registered webhook
+    0.4 — registered webhook but never triggered event
+    0.6 — triggered event and polled deliveries
+    0.8 — verified HMAC signature
+    1.0 — acknowledged webhook delivery (full lifecycle)
+    """
+    got_auth = any(
+        e["status_code"] in (200, 201) and "auth" in e["endpoint"]
+        for e in log
+    )
+    if not got_auth:
+        return 0.0
+
+    registered = store.get("webhook_registered", False)
+    if not registered:
+        return 0.2
+
+    triggered = store.get("event_triggered", False)
+    if not triggered:
+        return 0.4
+
+    polled = store.get("deliveries_polled", False)
+    if not polled:
+        return 0.5
+
+    verified = store.get("signature_verified", False)
+    if not verified:
+        return 0.6
+
+    acknowledged = store.get("webhook_acknowledged", False)
+    if not acknowledged:
+        return 0.8
+
+    return 1.0

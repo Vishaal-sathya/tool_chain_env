@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import requests
 from openai import OpenAI
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
@@ -8,8 +9,6 @@ MODEL_NAME   = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:8000")
-
-import requests
 
 client = OpenAI(
     base_url=API_BASE_URL,
@@ -125,7 +124,7 @@ def run_task(task_id: str) -> float:
     return score
 
 if __name__ == "__main__":
-    tasks = ["task1", "task2", "task3"]
+    tasks = ["task1", "task2", "task3", "task4"]
     scores = {}
     for task in tasks:
         scores[task] = run_task(task)

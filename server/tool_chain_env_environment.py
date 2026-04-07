@@ -5,12 +5,19 @@ from . import mock_api
 
 # ── Task definitions ──────────────────────────────────────────
 TASKS = {
-    "data_fetch": {
+    "task1": {
         "description": "Authenticate with /api/auth using the credentials provided, then retrieve the profile for user ID 42 from /api/crm/users/42.",
         "max_steps": 8,
         "api_docs": (
-            "POST /api/auth  body:{username,password}  → {token}\n"
-            "GET  /api/crm/users/{id}  header:Authorization:Bearer <token>  → user JSON"
+            "POST /api/auth\n"
+            "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
+            "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
+            "\n"
+            "GET /api/crm/users/{id}\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
+            "  Returns: {\"id\": int, \"name\": string, \"email\": string, \"plan\": string}\n"
+            "\n"
+            "Goal: Authenticate first, then GET /api/crm/users/42 with the Bearer token."
         ),
         "episode_data": {
             "valid_user": "agent",
@@ -20,13 +27,24 @@ TASKS = {
         },
         "target_user_id": 42,
     },
-    "distributed_transaction": {
+    "task2": {
         "description": "Use the token from /api/auth to get order ORD-5519 from /api/orders/ORD-5519, verify it is eligible for refund, then POST to /api/payments/refund with an Idempotency-Key header to prevent double-charging.",
         "max_steps": 12,
         "api_docs": (
-            "POST /api/auth  body:{username,password}  → {token}\n"
-            "GET  /api/orders/{order_id}  header:Authorization  → order JSON\n"
-            "POST /api/payments/refund  headers:Authorization,Idempotency-Key  body:{order_id,reason}  → {refund_id}"
+            "POST /api/auth\n"
+            "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
+            "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
+            "\n"
+            "GET /api/orders/{order_id}\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
+            "  Returns: {\"id\": string, \"amount\": float, \"eligible_for_refund\": bool, \"customer_id\": int}\n"
+            "\n"
+            "POST /api/payments/refund\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\", \"Idempotency-Key\": \"<unique-string>\", \"Content-Type\": \"application/json\"}\n"
+            "  Body: {\"order_id\": \"ORD-5519\"}\n"
+            "  Returns: {\"success\": bool, \"refund_id\": string, \"amount\": float, \"status\": string}\n"
+            "\n"
+            "Goal: Auth → GET order ORD-5519 → POST refund with Idempotency-Key header."
         ),
         "episode_data": {
             "valid_user": "agent",
@@ -37,13 +55,24 @@ TASKS = {
             },
         },
     },
-    "rate_limit_graphql": {
+    "task3": {
         "description": "Authenticate, then extract ALL system logs from /api/graphql using cursor-based pagination. The server rate-limits to 3 calls per 5 steps — use WAIT actions to back off on 429 responses. Collect every log entry.",
         "max_steps": 30,
         "api_docs": (
-            "POST /api/auth  body:{username,password}  → {token}\n"
-            "POST /api/graphql  header:Authorization  body:{query:'{ systemLogs }',variables:{cursor:null}}  → {data:{systemLogs:{edges:[],pageInfo:{nextCursor,hasNextPage}}}}\n"
-            "Use WAIT method to back off when you receive 429."
+            "POST /api/auth\n"
+            "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
+            "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
+            "\n"
+            "POST /api/graphql\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
+            "  Body: {\"query\": \"{ systemLogs }\", \"variables\": {\"cursor\": null}}\n"
+            "  Returns: {\"data\": {\"systemLogs\": {\"edges\": [...], \"pageInfo\": {\"nextCursor\": string|null, \"hasNextPage\": bool}}}}\n"
+            "\n"
+            "Rate limit: max 3 calls per 5-step window. On 429, use WAIT action to back off.\n"
+            "Pagination: pass the nextCursor value as variables.cursor to get the next page.\n"
+            "Continue until hasNextPage is false and nextCursor is null.\n"
+            "\n"
+            "Goal: Auth → paginate ALL system logs via GraphQL, respecting rate limits."
         ),
         "episode_data": {
             "valid_user": "agent",
@@ -52,10 +81,54 @@ TASKS = {
             "system_logs": [{"id": f"log_{i:03d}", "level": random.choice(["INFO","WARN","ERROR"]), "message": f"Event {i}", "ts": 1700000000 + i*60} for i in range(18)],
         },
     },
+    "task4": {
+        "description": "Register a webhook, trigger an event to fire it, poll for the delivery, verify the HMAC-SHA256 signature, and acknowledge receipt. This tests event-driven architecture understanding and cryptographic verification.",
+        "max_steps": 15,
+        "api_docs": (
+            "POST /api/auth\n"
+            "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
+            "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
+            "\n"
+            "POST /api/webhooks/register\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\", \"Content-Type\": \"application/json\"}\n"
+            "  Body: {\"callback_url\": \"https://agent.example.com/webhook\"}\n"
+            "  Returns: {\"webhook_id\": string, \"secret\": string, \"callback_url\": string, \"status\": \"active\"}\n"
+            "  IMPORTANT: Save the 'secret' — you need it to verify signatures later.\n"
+            "\n"
+            "POST /api/events/trigger\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\", \"Content-Type\": \"application/json\"}\n"
+            "  Body: {\"event_type\": \"order.completed\", \"webhook_id\": \"<webhook_id>\"}\n"
+            "  Returns: {\"event_id\": string, \"event_type\": string, \"webhook_id\": string, \"status\": \"dispatched\"}\n"
+            "\n"
+            "GET /api/webhooks/{webhook_id}/deliveries\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
+            "  Returns: {\"deliveries\": [{\"delivery_id\": string, \"payload\": object, \"signature\": \"sha256=<hex>\", \"status\": string}]}\n"
+            "\n"
+            "POST /api/webhooks/verify\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\", \"Content-Type\": \"application/json\"}\n"
+            "  Body: {\"delivery_id\": string, \"signature\": \"sha256=<hex>\", \"payload\": object}\n"
+            "  Returns: {\"verified\": bool, \"delivery_id\": string, \"status\": string}\n"
+            "  NOTE: Pass the exact signature string from the delivery response.\n"
+            "\n"
+            "POST /api/webhooks/{webhook_id}/acknowledge\n"
+            "  Headers: {\"Authorization\": \"Bearer <token>\", \"Content-Type\": \"application/json\"}\n"
+            "  Body: {\"confirmed\": true}\n"
+            "  Returns: {\"acknowledged\": true, \"webhook_id\": string, \"status\": \"confirmed\"}\n"
+            "\n"
+            "Goal: Auth → Register webhook → Trigger event → Poll deliveries → Verify HMAC signature → Acknowledge."
+        ),
+        "episode_data": {
+            "valid_user": "agent",
+            "valid_pass": "secret123",
+            "token": "tok_" + uuid.uuid4().hex[:12],
+            "webhook_id": "wh_" + uuid.uuid4().hex[:12],
+            "webhook_secret": "whsec_" + uuid.uuid4().hex[:24],
+        },
+    },
 }
 
 class ToolChainEnvironment:
-    def __init__(self, task_id: str = "data_fetch"):
+    def __init__(self, task_id: str = "task1"):
         self.task_id   = task_id
         self.task      = TASKS[task_id]
         self._episode_id = ""
@@ -156,6 +229,29 @@ class ToolChainEnvironment:
         elif method == "POST" and endpoint == "/api/graphql":
             status, resp = mock_api._graphql_handler(body, headers)
 
+        # ── Task 4: Webhook endpoints ─────────────────────────
+        # POST /api/webhooks/register
+        elif method == "POST" and endpoint == "/api/webhooks/register":
+            status, resp = mock_api._webhook_register_handler(body, headers)
+
+        # POST /api/events/trigger
+        elif method == "POST" and endpoint == "/api/events/trigger":
+            status, resp = mock_api._event_trigger_handler(body, headers)
+
+        # GET /api/webhooks/{webhook_id}/deliveries
+        elif method == "GET" and re.match(r"/api/webhooks/[^/]+/deliveries", endpoint):
+            webhook_id = endpoint.split("/api/webhooks/")[1].split("/deliveries")[0]
+            status, resp = mock_api._webhook_deliveries_handler(webhook_id, headers)
+
+        # POST /api/webhooks/verify
+        elif method == "POST" and endpoint == "/api/webhooks/verify":
+            status, resp = mock_api._webhook_verify_handler(body, headers)
+
+        # POST /api/webhooks/{webhook_id}/acknowledge
+        elif method == "POST" and re.match(r"/api/webhooks/[^/]+/acknowledge", endpoint):
+            webhook_id = endpoint.split("/api/webhooks/")[1].split("/acknowledge")[0]
+            status, resp = mock_api._webhook_acknowledge_handler(webhook_id, body, headers)
+
         latency = round((time.perf_counter() - t0) * 1000, 2)
         return status, resp, latency
 
@@ -170,8 +266,13 @@ class ToolChainEnvironment:
         elif status == 401:
             r -= 0.08
         if action.endpoint == "/api/payments/refund" and status == 200:
-            if action.headers.get("Idempotency-Key"):
+            if action.headers.get("Idempotency-Key") or action.headers.get("X-Idempotency-Key"):
                 r += 0.20
+        # Webhook-specific rewards
+        if "webhooks/verify" in action.endpoint and status == 200:
+            r += 0.25  # big reward for correct HMAC verification
+        if "webhooks" in action.endpoint and "acknowledge" in action.endpoint and status == 200:
+            r += 0.15  # reward for completing the full webhook lifecycle
         return r
 
     def _terminal_reward(self) -> float:
@@ -181,14 +282,16 @@ class ToolChainEnvironment:
 
     def _is_terminal(self, status: int, resp: dict) -> bool:
         task = self.task_id
-        if task == "data_fetch":
+        if task == "task1":
             return status == 200 and "email" in resp
-        if task == "distributed_transaction":
+        if task == "task2":
             return mock_api._store.get("refund_processed", False)
-        if task == "rate_limit_graphql":
+        if task == "task3":
             collected = len(mock_api._store.get("collected_log_ids", set()))
             total = len(self._episode_data.get("system_logs", []))
             return collected >= total
+        if task == "task4":
+            return mock_api._store.get("webhook_acknowledged", False)
         return False
 
     def _make_obs(self, status_code, response_data, latency) -> ToolChainObservation:

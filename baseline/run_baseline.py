@@ -3,20 +3,21 @@ import json
 import requests
 
 BASE = os.environ.get("ENV_BASE_URL", "http://localhost:8000")
-TASKS = ["task1", "task2", "task3"]
+TASKS = ["task1", "task2", "task3", "task4"]
 
 def run_heuristic_episode(task_id: str) -> float:
     """
     Rule-based agent. Guaranteed nonzero scores.
     Knows the exact correct sequence for each task.
     """
-    obs_resp = requests.post(f"{BASE}/reset_task", params={"task_id": task_id})
-    obs = obs_resp.json().get("observation", {})
+    reset_resp = requests.post(f"{BASE}/reset_task", params={"task_id": task_id})
+    obs = reset_resp.json()
     done = False
     token = None
     step = 0
+    next_cursor = None
 
-    while not done and step < 10:
+    while not done and step < 30:
         step += 1
         action = {}
 
@@ -26,85 +27,166 @@ def run_heuristic_episode(task_id: str) -> float:
                     "method": "POST",
                     "endpoint": "/api/auth",
                     "headers": {"Content-Type": "application/json"},
-                    "body": {"username": "root", "password": "admin"}
+                    "body": {"username": "agent", "password": "secret123"}
                 }
             else:
                 action = {
                     "method": "GET",
                     "endpoint": "/api/crm/users/42",
-                    "headers": {"Authorization": token},
-                    "body": {}
+                    "headers": {"Authorization": f"Bearer {token}"},
+                    "body": None
                 }
 
         elif task_id == "task2":
-            history = obs.get("history", [])
-            got_order = any("orders" in h for h in history)
-            got_auth = any("api/auth" in h and "200" in h for h in history)
-            if not got_auth or token is None:
+            if token is None:
                 action = {
                     "method": "POST",
                     "endpoint": "/api/auth",
                     "headers": {"Content-Type": "application/json"},
-                    "body": {"username": "root", "password": "admin"}
+                    "body": {"username": "agent", "password": "secret123"}
                 }
-            elif not got_order:
+            elif step == 2:
                 action = {
                     "method": "GET",
                     "endpoint": "/api/orders/ORD-5519",
-                    "headers": {"Authorization": token},
-                    "body": {}
+                    "headers": {"Authorization": f"Bearer {token}"},
+                    "body": None
                 }
             else:
                 action = {
                     "method": "POST",
                     "endpoint": "/api/payments/refund",
                     "headers": {
-                        "Authorization": token,
-                        "X-Idempotency-Key": "heuristic-key-001",
+                        "Authorization": f"Bearer {token}",
+                        "Idempotency-Key": f"idem-{task_id}-{step}",
                         "Content-Type": "application/json"
                     },
                     "body": {"order_id": "ORD-5519"}
                 }
 
         elif task_id == "task3":
-            history = obs.get("history", [])
-            got_auth = any("api/auth" in h and "200" in h for h in history)
-            last_cursor = obs.get("response_data", {}).get("next_cursor", 0) or 0
-            if not got_auth or token is None:
+            status_code = obs.get("status_code", 0)
+            if token is None:
                 action = {
                     "method": "POST",
                     "endpoint": "/api/auth",
                     "headers": {"Content-Type": "application/json"},
-                    "body": {"username": "root", "password": "admin"}
+                    "body": {"username": "agent", "password": "secret123"}
+                }
+            elif status_code == 429:
+                action = {
+                    "method": "WAIT",
+                    "endpoint": "",
+                    "headers": {},
+                    "body": None
                 }
             else:
-                status = obs.get("status_code", 200)
-                if status == 429:
+                action = {
+                    "method": "POST",
+                    "endpoint": "/api/graphql",
+                    "headers": {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "query": "{ systemLogs }",
+                        "variables": {"cursor": next_cursor}
+                    }
+                }
+
+        elif task_id == "task4":
+            status_code = obs.get("status_code", 0)
+            resp_data = obs.get("response_data", {})
+            if token is None:
+                action = {
+                    "method": "POST",
+                    "endpoint": "/api/auth",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {"username": "agent", "password": "secret123"}
+                }
+            elif not hasattr(run_heuristic_episode, '_wh_id') or step == 2:
+                if step == 2 and resp_data.get("webhook_id"):
+                    run_heuristic_episode._wh_id = resp_data["webhook_id"]
+                action = {
+                    "method": "POST",
+                    "endpoint": "/api/webhooks/register",
+                    "headers": {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    "body": {"callback_url": "https://agent.example.com/webhook"}
+                }
+            elif step == 3:
+                wh_id = resp_data.get("webhook_id", getattr(run_heuristic_episode, '_wh_id', ''))
+                run_heuristic_episode._wh_id = wh_id
+                action = {
+                    "method": "POST",
+                    "endpoint": "/api/events/trigger",
+                    "headers": {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    "body": {"event_type": "order.completed", "webhook_id": wh_id}
+                }
+            elif step == 4:
+                wh_id = getattr(run_heuristic_episode, '_wh_id', '')
+                action = {
+                    "method": "GET",
+                    "endpoint": f"/api/webhooks/{wh_id}/deliveries",
+                    "headers": {"Authorization": f"Bearer {token}"},
+                    "body": None
+                }
+            elif step == 5:
+                deliveries = resp_data.get("deliveries", [])
+                if deliveries:
+                    d = deliveries[0]
+                    run_heuristic_episode._delivery = d
                     action = {
-                        "method": "GET",
-                        "endpoint": f"/api/logs?cursor={last_cursor}",
-                        "headers": {"Authorization": token},
-                        "body": {}
+                        "method": "POST",
+                        "endpoint": "/api/webhooks/verify",
+                        "headers": {
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json"
+                        },
+                        "body": {
+                            "delivery_id": d.get("delivery_id", ""),
+                            "signature": d.get("signature", ""),
+                            "payload": d.get("payload", {})
+                        }
                     }
                 else:
-                    action = {
-                        "method": "GET",
-                        "endpoint": f"/api/logs?cursor={last_cursor}",
-                        "headers": {"Authorization": token},
-                        "body": {}
-                    }
+                    action = {"method": "WAIT", "endpoint": "", "headers": {}, "body": None}
+            elif step == 6:
+                wh_id = getattr(run_heuristic_episode, '_wh_id', '')
+                action = {
+                    "method": "POST",
+                    "endpoint": f"/api/webhooks/{wh_id}/acknowledge",
+                    "headers": {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    },
+                    "body": {"confirmed": True}
+                }
+            else:
+                action = {"method": "WAIT", "endpoint": "", "headers": {}, "body": None}
 
         result = requests.post(
             f"{BASE}/step_task",
-            json={"action": action}
+            params={"task_id": task_id},
+            json=action
         ).json()
 
         obs = result.get("observation", {})
         done = result.get("done", False)
 
         resp_data = obs.get("response_data", {})
-        if "token" in str(resp_data):
+        if isinstance(resp_data, dict) and "token" in resp_data:
             token = resp_data.get("token", token)
+
+        # Track GraphQL pagination cursor
+        if task_id == "task3" and isinstance(resp_data, dict):
+            page_info = resp_data.get("data", {}).get("systemLogs", {}).get("pageInfo", {})
+            next_cursor = page_info.get("nextCursor", next_cursor)
 
     score_resp = requests.post(f"{BASE}/grader", params={"task_id": task_id})
     score = score_resp.json().get("score", 0.0)
@@ -123,5 +205,5 @@ if __name__ == "__main__":
             print(f"SCORE:{task}:0.0000")
             print(f"  ERROR: {e}")
 
-    avg = sum(all_scores.values()) / len(all_scores)
+    avg = sum(all_scores.values()) / len(all_scores) if all_scores else 0.0
     print(f"\nAverage score: {avg:.4f}")

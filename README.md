@@ -1,39 +1,47 @@
-# ToolChain-Env
+# ToolChain-Env: API Orchestration RL Environment
 
-A reinforcement learning environment for training and evaluating LLM agents on real-world API orchestration tasks. The agent interacts with a mock internet — a set of REST and GraphQL endpoints — by composing HTTP requests, handling authentication, managing distributed transactions, and navigating rate limits with pagination.
+Training agents to reliably use external APIs is one of the hardest open problems in agentic AI. Current benchmarks like ToolBench and APIBench evaluate agents on static datasets — they offer no episodic loop, no shaped reward, and no way to train with reinforcement learning. **ToolChain-Env** fills that gap: a fully episodic RL environment built around real-world API orchestration patterns including authentication flows, idempotent distributed transactions, rate-limited pagination, and webhook-driven event verification.
 
-Built for the Meta x HuggingFace OpenENV Hackathon.
-
----
-
-## Why this exists
-
-Training agents to use external tools reliably is one of the hardest open problems in LLM research right now. Benchmarks like ToolBench and APIBench evaluate agents on fixed datasets, but they cannot be used as RL training environments — there is no step/reset loop, no shaped reward, no episodic structure.
-
-ToolChain-Env fills that gap. Every task runs against a deterministic mock API server, so episodes are reproducible, graders are exact, and there is no rate-limit cost or API key required to train at scale. The environment is language-agnostic: any agent that can emit a JSON payload can participate.
+Built for the **Meta × HuggingFace OpenENV Hackathon**.
 
 ---
 
-## Environment overview
+## Why This Domain
 
-The agent acts as a client navigating a network of mock REST and GraphQL services. On each step it outputs a structured HTTP action. The environment routes that action to the mock server, returns the response as an observation, and computes a shaped reward based on correctness, efficiency, and security hygiene.
+LLM agents routinely fail at multi-step API workflows because they:
+- **Hallucinate endpoint names** that don't exist
+- **Forget auth tokens** between steps
+- **Don't understand idempotency** — they retry payments without deduplication keys, causing double-charges
+- **Cannot handle rate limits** — they spam endpoints until they get blocked
+- **Have no concept of webhooks** — event-driven architectures are completely foreign to language models
 
-The mock server runs inside the same process — no external services, no Docker-compose, no network calls outside the container.
+These are not edge cases. They are the core failure modes that prevent LLM agents from being deployed in production API integrations. ToolChain-Env provides the first RL training environment where agents can learn to overcome each of these failure modes through shaped reward signals and episodic structure.
 
 ---
 
-## Action space
+## Task Overview
 
-Every action is a dictionary with four fields:
+| Task | Difficulty | Max Steps | Key Skill |
+|------|-----------|-----------|-----------|
+| **Task 1 — The Data Fetch** | Easy | 8 | Bearer token auth → CRM data retrieval |
+| **Task 2 — The Distributed Transaction** | Medium | 12 | Idempotency-key protected payment refund |
+| **Task 3 — Rate-Limit Evasion & Pagination** | Hard | 30 | GraphQL cursor pagination under rate limits |
+| **Task 4 — Webhook Verification** | Expert | 15 | HMAC-SHA256 signature verification + event lifecycle |
+
+---
+
+## Action Space
+
+Every action is a JSON object with four fields:
 
 | Field | Type | Description |
-|---|---|---|
-| `method` | string | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `WAIT` |
-| `endpoint` | string | Target path, e.g. `/api/auth` or `/api/orders/ORD-5519` |
-| `headers` | dict | Key-value pairs — Authorization, Content-Type, Idempotency-Key |
-| `body` | dict or null | JSON payload for POST/PUT/PATCH requests |
+|-------|------|-------------|
+| `method` | `string` | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `WAIT` |
+| `endpoint` | `string` | Target path, e.g. `/api/auth` or `/api/orders/ORD-5519` |
+| `headers` | `dict` | Key-value pairs — Authorization, Content-Type, Idempotency-Key |
+| `body` | `dict` or `null` | JSON payload for POST/PUT/PATCH requests |
 
-`WAIT` is a no-op action used to back off during rate limiting. The agent receives a small positive reward for using WAIT correctly after a 429 response.
+`WAIT` is a special no-op action used to back off during rate limiting. The agent receives a positive reward for using WAIT correctly after a 429 response.
 
 **Example action:**
 ```json
@@ -46,175 +54,209 @@ Every action is a dictionary with four fields:
     "Content-Type": "application/json"
   },
   "body": {
-    "order_id": "ORD-5519",
-    "reason": "customer_requested"
+    "order_id": "ORD-5519"
   }
 }
 ```
 
 ---
 
-## Observation space
+## Observation Space
 
 After each step the agent receives:
 
 | Field | Type | Description |
-|---|---|---|
-| `status_code` | int | HTTP status — 200, 201, 400, 401, 404, 429 |
-| `response_data` | dict | Parsed JSON response body |
-| `simulated_latency_ms` | float | Artificial latency injected by the environment |
-| `task_description` | string | Natural language goal for this episode |
-| `api_docs` | string | Available endpoints and their request schemas |
-| `step_budget_remaining` | int | Steps left before forced episode termination |
-| `rate_limit_reset_in` | int | Steps to wait before rate limit resets (0 = clear) |
-| `episode_log` | list | Last 5 actions and their outcomes |
-
-**Example observation:**
-```json
-{
-  "status_code": 201,
-  "response_data": {
-    "success": true,
-    "refund_id": "REF-ORD-5519",
-    "amount": 49.99,
-    "status": "processing"
-  },
-  "simulated_latency_ms": 142.5,
-  "task_description": "Process a refund for order ORD-5519 with idempotency guarantees.",
-  "step_budget_remaining": 6,
-  "rate_limit_reset_in": 0
-}
-```
+|-------|------|-------------|
+| `status_code` | `int` | HTTP status — 200, 201, 400, 401, 404, 429 |
+| `response_data` | `dict` | Parsed JSON response body |
+| `simulated_latency_ms` | `float` | Artificial latency injected by the environment |
+| `task_description` | `string` | Natural language goal for this episode |
+| `api_docs` | `string` | Available endpoints with exact request/response schemas |
+| `step_budget_remaining` | `int` | Steps left before forced episode termination |
+| `rate_limit_reset_in` | `int` | Steps to wait before rate limit resets (0 = clear) |
+| `episode_log` | `list` | Last 5 actions and their outcomes |
 
 ---
 
-## Tasks
+## Task Details
 
 ### Task 1 — The Data Fetch `[easy]`
 
-The agent must authenticate against `/api/auth` using provided credentials, obtain a Bearer token, and use it to retrieve a specific user profile from `/api/crm/users/{id}`.
-
-**Grader checkpoints:**
+Authenticate against `/api/auth` with provided credentials, obtain a Bearer token, and retrieve a specific user profile from `/api/crm/users/{id}`.
 
 | Score | Condition |
-|---|---|
+|-------|-----------|
 | 0.0 | Failed to authenticate or retrieve a token |
 | 0.3 | Obtained token but never called the CRM endpoint |
-| 0.5 | Called CRM but received 400 or 404 (wrong URL or missing token) |
+| 0.5 | Called CRM but received 400/404 (wrong URL or missing token) |
+| 0.7 | Retrieved a user profile but wrong user ID |
 | 1.0 | Retrieved the correct user profile successfully |
-
-**Max steps:** 8
-
----
 
 ### Task 2 — The Distributed Transaction `[medium]`
 
-The agent must authenticate, query `/api/orders/{order_id}` to retrieve an order and verify refund eligibility, then POST to `/api/payments/refund` with the correct JSON body **and** an `Idempotency-Key` header to prevent double-charging.
-
-**Grader checkpoints:**
+Authenticate, retrieve order details from `/api/orders/{order_id}`, verify refund eligibility, then POST to `/api/payments/refund` with an `Idempotency-Key` header.
 
 | Score | Condition |
-|---|---|
-| 0.0 | Did nothing meaningful or crashed on first call |
-| 0.3 | Retrieved order data but never attempted a refund |
-| 0.8 | Refund processed successfully but Idempotency-Key was missing |
-| 1.0 | Refund processed with correct Idempotency-Key header |
+|-------|-----------|
+| 0.0 | Did nothing meaningful or crashed |
+| 0.3 | Retrieved order data but never attempted refund |
+| 0.8 | Refund processed but Idempotency-Key was missing |
+| 1.0 | Refund processed with correct Idempotency-Key |
 
-The 0.8 checkpoint specifically tests whether the agent understands distributed systems safety — processing a payment without idempotency protection is a real production risk.
+The 0.8 → 1.0 gap specifically tests distributed systems safety. Processing payments without idempotency protection is a real production risk.
 
-**Max steps:** 12
+### Task 3 — Rate-Limit Evasion & GraphQL Pagination `[hard]`
 
----
-
-### Task 3 — Rate-Limit Evasion and GraphQL Pagination `[hard]`
-
-The agent must authenticate and then extract the full set of system logs from a GraphQL endpoint that enforces strict rate limiting (maximum 3 calls per 5-step window, returning 429 on violation) and requires cursor-based pagination to retrieve all records.
-
-**Grader checkpoints:**
+Authenticate and extract all system logs from a GraphQL endpoint that enforces strict rate limiting (max 3 calls per 5-step window) and requires cursor-based pagination.
 
 | Score | Condition |
-|---|---|
-| 0.0 | Spammed the endpoint and got blocked, collected no logs |
-| 0.4 | Handled rate limiting with WAIT actions but failed to paginate |
-| 0.7 | Paginated through some pages but stopped before the final cursor |
+|-------|-----------|
+| 0.0 | Spammed endpoint, collected nothing |
+| 0.2–0.3 | Collected some logs but poor rate-limit handling |
+| 0.4 | Used WAIT correctly but stopped paginating early |
+| 0.7 | Paginated most pages but missed the final cursor |
 | 1.0 | Collected every log entry across all pages |
 
-**Max steps:** 30
+### Task 4 — Webhook Verification `[expert]`
+
+Register a webhook endpoint, trigger an event to fire it, poll for the delivery, verify the HMAC-SHA256 signature, and acknowledge receipt. This tests understanding of event-driven architectures and cryptographic verification — skills no toy environment can teach.
+
+| Score | Condition |
+|-------|-----------|
+| 0.0 | Failed to authenticate |
+| 0.2 | Authenticated but never registered webhook |
+| 0.4 | Registered webhook but never triggered event |
+| 0.6 | Triggered event and polled deliveries |
+| 0.8 | Verified HMAC-SHA256 signature correctly |
+| 1.0 | Completed full webhook lifecycle with acknowledgement |
 
 ---
 
-## Reward function
+## Reward Function
 
 Reward is shaped at every step — not just at episode end.
 
 | Signal | Reward |
-|---|---|
+|--------|--------|
 | Successful API call (200/201) | +0.15 |
 | Correct Idempotency-Key on refund | +0.20 |
+| HMAC signature verified | +0.25 |
+| Webhook acknowledged | +0.15 |
 | WAIT used correctly after 429 | +0.05 |
-| Rate limited (429) — should have waited | -0.10 |
-| Auth error (401) — forgot token | -0.08 |
-| Malformed request (400/404) | -0.05 |
-| WAIT used when not rate-limited | -0.05 |
-| Time step cost (every step) | -0.01 |
-| Terminal bonus | grade_score × 0.5 |
+| Rate limited (429) — should have waited | −0.10 |
+| Auth error (401) — forgot token | −0.08 |
+| Malformed request (400/404) | −0.05 |
+| WAIT used when not rate-limited | −0.05 |
+| Time step cost (every step) | −0.01 |
+| Terminal bonus | `grade_score × 0.5` |
 
-The terminal bonus is a scaled version of the episode grader score, so the shaped reward and final grade are always consistent.
+The terminal bonus is a scaled version of the episode grader score, ensuring shaped rewards and final grades are always consistent.
 
 ---
 
 ## Setup
 
-**Requirements:** Python 3.11, Docker
+**Requirements:** Python 3.11+
+
 ```bash
-# Clone and set up environment
+# Clone and install
 git clone https://github.com/Vishaal-sathya/tool_chain_env
 cd tool_chain_env
-
-py -3.11 -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Mac/Linux
-
 pip install -r requirements.txt
+
+# Run the server
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-**Run locally:**
+**Docker:**
 ```bash
-uvicorn server.app:app --reload --port 8000
+docker build -t tool-chain-env .
+docker run -p 8000:8000 tool-chain-env
 ```
 
-**Run with Docker:**
+**Verify:**
 ```bash
-docker build -t tool-chain-env -f server/Dockerfile .
-docker run -p 8000:8000 -e OPENAI_API_KEY=sk-... tool-chain-env
+curl http://localhost:8000/health
+# {"status":"ok"}
 ```
 
 ---
 
-## API reference
-
-Once running, all endpoints are available at `http://localhost:8000`.
+## API Reference
 
 | Method | Endpoint | Description |
-|---|---|---|
+|--------|----------|-------------|
 | GET | `/health` | Health check — returns `{"status":"ok"}` |
-| GET | `/tasks` | List all tasks with action schema |
-| POST | `/reset_task?task_id=data_fetch` | Start a new episode |
-| POST | `/step_task?task_id=data_fetch` | Submit one action |
-| GET | `/state_task?task_id=data_fetch` | Current episode state |
-| POST | `/grader?task_id=data_fetch` | Episode score (0.0–1.0) |
-| POST | `/baseline` | Run full baseline script, returns all scores |
+| GET | `/tasks` | List all tasks with schemas |
+| POST | `/reset_task?task_id=task1` | Start a new episode |
+| POST | `/step_task?task_id=task1` | Submit one action |
+| GET | `/state_task?task_id=task1` | Current episode state |
+| POST | `/grader?task_id=task1` | Episode score (0.0–1.0) |
+| POST | `/reset?task_id=task1` | Alias for reset_task |
+| POST | `/step?task_id=task1` | Alias for step_task |
+| GET | `/state?task_id=task1` | Alias for state_task |
+| GET | `/action_schema` | JSON schema for ToolChainAction |
+| GET | `/observation_schema` | JSON schema for ToolChainObservation |
 
-**Full API docs** (Swagger UI): `http://localhost:8000/docs`
+**Swagger UI:** `http://localhost:8000/docs`
 
 ---
 
-## Running the baseline
-```bash
-export OPENAI_API_KEY=sk-your-key-here
-export ENV_BASE_URL=http://localhost:8000
+## Running the Baseline
 
+```bash
+export ENV_BASE_URL=http://localhost:8000
 python -m baseline.run_baseline
 ```
 
 **Expected output:**
+```
+Running ToolChain-Env baseline...
+
+SCORE:task1:1.0000
+SCORE:task2:1.0000
+SCORE:task3:1.0000
+SCORE:task4:1.0000
+
+Average score: 1.0000
+```
+
+---
+
+## Running Inference (LLM Agent)
+
+```bash
+export API_BASE_URL=https://api-inference.huggingface.co/v1
+export MODEL_NAME=meta-llama/Llama-3.3-70B-Instruct
+export HF_TOKEN=hf_your_token_here
+export ENV_BASE_URL=http://localhost:8000
+
+python inference.py
+```
+
+---
+
+## Architecture
+
+```
+tool_chain_env/
+├── app.py                          # FastAPI application entry point
+├── models.py                       # Pydantic models (Action, Observation, State)
+├── inference.py                    # LLM agent inference script
+├── openenv.yaml                    # OpenEnv specification
+├── Dockerfile                      # Container deployment
+├── server/
+│   ├── tool_chain_env_environment.py  # Core RL environment (reset/step/state)
+│   ├── mock_api.py                    # Mock API server (auth, CRM, payments, webhooks)
+│   └── grader.py                      # Episode grading (per-task scoring)
+└── baseline/
+    └── run_baseline.py                # Heuristic baseline agent
+```
+
+The mock API server runs **inside the same process** — no external services, no Docker-compose, no network latency. Episodes are deterministic and reproducible.
+
+---
+
+## License
+
+BSD-style license. See LICENSE for details.

@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from typing import Optional
+import uuid
+import hashlib
+import hmac
+import json
 
 router = APIRouter(prefix="/api", tags=["mock-api"])
 
@@ -53,7 +57,7 @@ def _refund_handler(body: dict, headers: dict) -> tuple:
     authorization = headers.get("authorization") or headers.get("Authorization")
     if not _valid_token(authorization):
         return 401, {"error": "Unauthorized"}
-    idempotency_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
+    idempotency_key = headers.get("Idempotency-Key") or headers.get("idempotency-key") or headers.get("X-Idempotency-Key") or headers.get("x-idempotency-key")
     order_id = body.get("order_id", "")
     order = _store.get("orders", {}).get(order_id, {})
     if not order.get("eligible_for_refund"):
@@ -98,6 +102,153 @@ def _graphql_handler(body: dict, headers: dict) -> tuple:
 
 
 # ══════════════════════════════════════════════════════════════
+# Task 4 — Webhook Verification Handlers
+# ══════════════════════════════════════════════════════════════
+
+def _webhook_register_handler(body: dict, headers: dict) -> tuple:
+    """Register a webhook callback URL. Returns webhook_id and secret."""
+    authorization = headers.get("authorization") or headers.get("Authorization")
+    if not _valid_token(authorization):
+        return 401, {"error": "Unauthorized"}
+    callback_url = body.get("callback_url", "")
+    if not callback_url:
+        return 400, {"error": "callback_url is required"}
+
+    webhook_id = _store.get("webhook_id", f"wh_{uuid.uuid4().hex[:12]}")
+    webhook_secret = _store.get("webhook_secret", f"whsec_{uuid.uuid4().hex[:24]}")
+
+    _store["webhook_id"] = webhook_id
+    _store["webhook_secret"] = webhook_secret
+    _store["webhook_callback_url"] = callback_url
+    _store["webhook_registered"] = True
+
+    return 201, {
+        "webhook_id": webhook_id,
+        "secret": webhook_secret,
+        "callback_url": callback_url,
+        "status": "active"
+    }
+
+
+def _event_trigger_handler(body: dict, headers: dict) -> tuple:
+    """Trigger an event that fires the registered webhook."""
+    authorization = headers.get("authorization") or headers.get("Authorization")
+    if not _valid_token(authorization):
+        return 401, {"error": "Unauthorized"}
+
+    if not _store.get("webhook_registered"):
+        return 400, {"error": "No webhook registered. Register one first."}
+
+    event_type = body.get("event_type", "order.completed")
+    webhook_id = body.get("webhook_id", _store.get("webhook_id", ""))
+
+    # Generate the webhook delivery
+    delivery_id = f"del_{uuid.uuid4().hex[:12]}"
+    payload = {
+        "event_type": event_type,
+        "webhook_id": webhook_id,
+        "data": {"order_id": "ORD-7712", "amount": 129.99, "status": "completed"},
+        "timestamp": 1700000000
+    }
+
+    # Sign the payload with HMAC-SHA256
+    payload_str = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    signature = hmac.new(
+        _store["webhook_secret"].encode(),
+        payload_str.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    _store["webhook_deliveries"] = [{
+        "delivery_id": delivery_id,
+        "payload": payload,
+        "signature": f"sha256={signature}",
+        "status": "pending",
+        "attempts": 1
+    }]
+    _store["event_triggered"] = True
+    _store["expected_signature"] = f"sha256={signature}"
+    _store["delivery_payload_str"] = payload_str
+
+    return 200, {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": event_type,
+        "webhook_id": webhook_id,
+        "status": "dispatched"
+    }
+
+
+def _webhook_deliveries_handler(webhook_id: str, headers: dict) -> tuple:
+    """Poll deliveries for a webhook."""
+    authorization = headers.get("authorization") or headers.get("Authorization")
+    if not _valid_token(authorization):
+        return 401, {"error": "Unauthorized"}
+
+    if webhook_id != _store.get("webhook_id"):
+        return 404, {"error": "Webhook not found"}
+
+    deliveries = _store.get("webhook_deliveries", [])
+    if not deliveries:
+        return 200, {"deliveries": [], "message": "No deliveries yet. Trigger an event first."}
+
+    _store["deliveries_polled"] = True
+
+    return 200, {"deliveries": deliveries}
+
+
+def _webhook_verify_handler(body: dict, headers: dict) -> tuple:
+    """Verify the HMAC signature of a webhook delivery."""
+    authorization = headers.get("authorization") or headers.get("Authorization")
+    if not _valid_token(authorization):
+        return 401, {"error": "Unauthorized"}
+
+    delivery_id = body.get("delivery_id", "")
+    provided_signature = body.get("signature", "")
+    provided_payload = body.get("payload", {})
+
+    deliveries = _store.get("webhook_deliveries", [])
+    delivery = None
+    for d in deliveries:
+        if d["delivery_id"] == delivery_id:
+            delivery = d
+            break
+
+    if not delivery:
+        return 404, {"error": "Delivery not found"}
+
+    # Re-compute expected signature
+    payload_str = json.dumps(delivery["payload"], sort_keys=True, separators=(",", ":"))
+    expected_sig = "sha256=" + hmac.new(
+        _store["webhook_secret"].encode(),
+        payload_str.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    if provided_signature == expected_sig:
+        _store["signature_verified"] = True
+        return 200, {"verified": True, "delivery_id": delivery_id, "status": "signature_valid"}
+    else:
+        _store["signature_verified"] = False
+        return 400, {"verified": False, "error": "Signature mismatch", "expected_format": "sha256=<hex>"}
+
+
+def _webhook_acknowledge_handler(webhook_id: str, body: dict, headers: dict) -> tuple:
+    """Acknowledge receipt of a webhook delivery."""
+    authorization = headers.get("authorization") or headers.get("Authorization")
+    if not _valid_token(authorization):
+        return 401, {"error": "Unauthorized"}
+
+    if webhook_id != _store.get("webhook_id"):
+        return 404, {"error": "Webhook not found"}
+
+    if not _store.get("signature_verified"):
+        return 400, {"error": "Must verify signature before acknowledging"}
+
+    _store["webhook_acknowledged"] = True
+    return 200, {"acknowledged": True, "webhook_id": webhook_id, "status": "confirmed"}
+
+
+# ══════════════════════════════════════════════════════════════
 # FastAPI route wrappers (thin wrappers around the handlers)
 # ══════════════════════════════════════════════════════════════
 
@@ -136,6 +287,47 @@ async def graphql(request: Request):
     body = await request.json()
     headers = dict(request.headers)
     status, data = _graphql_handler(body, headers)
+    return JSONResponse(status_code=status, content=data)
+
+
+# ── Task 4 webhook routes ────────────────────────────────────
+
+@router.post("/webhooks/register")
+async def register_webhook(request: Request):
+    body = await request.json()
+    headers = dict(request.headers)
+    status, data = _webhook_register_handler(body, headers)
+    return JSONResponse(status_code=status, content=data)
+
+
+@router.post("/events/trigger")
+async def trigger_event(request: Request):
+    body = await request.json()
+    headers = dict(request.headers)
+    status, data = _event_trigger_handler(body, headers)
+    return JSONResponse(status_code=status, content=data)
+
+
+@router.get("/webhooks/{webhook_id}/deliveries")
+async def get_deliveries(webhook_id: str, request: Request):
+    headers = dict(request.headers)
+    status, data = _webhook_deliveries_handler(webhook_id, headers)
+    return JSONResponse(status_code=status, content=data)
+
+
+@router.post("/webhooks/verify")
+async def verify_webhook(request: Request):
+    body = await request.json()
+    headers = dict(request.headers)
+    status, data = _webhook_verify_handler(body, headers)
+    return JSONResponse(status_code=status, content=data)
+
+
+@router.post("/webhooks/{webhook_id}/acknowledge")
+async def acknowledge_webhook(webhook_id: str, request: Request):
+    body = await request.json()
+    headers = dict(request.headers)
+    status, data = _webhook_acknowledge_handler(webhook_id, body, headers)
     return JSONResponse(status_code=status, content=data)
 
 
