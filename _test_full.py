@@ -23,7 +23,9 @@ step1 = r.json()
 token = step1["observation"]["response_data"].get("token", "")
 print(f"Step1 auth: status={step1['observation']['status_code']} token={token[:20]}...")
 
-action2 = {"method": "GET", "endpoint": "/api/crm/users/42", "headers": {"Authorization": f"Bearer {token}"}, "body": None}
+import re
+target_user_id = re.search(r"user ID (\d+)", obs["task_description"]).group(1)
+action2 = {"method": "GET", "endpoint": f"/api/crm/users/{target_user_id}", "headers": {"Authorization": f"Bearer {token}"}, "body": None}
 r = requests.post(f"{BASE}/step_task", params={"task_id": "task1"}, json=action2)
 step2 = r.json()
 print(f"Step2 CRM: status={step2['observation']['status_code']} done={step2['done']}")
@@ -34,6 +36,7 @@ print(f"Grader: {r.json()}")
 # 4. Test Task 2
 print("\n=== Task 2 ===")
 r = requests.post(f"{BASE}/reset_task", params={"task_id": "task2"})
+obs2 = r.json()
 print(f"Reset: {r.status_code}")
 
 action = {"method": "POST", "endpoint": "/api/auth", "headers": {"Content-Type": "application/json"}, "body": {"username": "agent", "password": "secret123"}}
@@ -41,15 +44,57 @@ r = requests.post(f"{BASE}/step_task", params={"task_id": "task2"}, json=action)
 tok2 = r.json()["observation"]["response_data"]["token"]
 print(f"Auth: got token")
 
-action = {"method": "GET", "endpoint": "/api/orders/ORD-5519", "headers": {"Authorization": f"Bearer {tok2}"}, "body": None}
+target_order_id = re.search(r"order ([A-Z]{3}-\d{4})", obs2["task_description"]).group(1)
+action = {"method": "GET", "endpoint": f"/api/orders/{target_order_id}", "headers": {"Authorization": f"Bearer {tok2}"}, "body": None}
 r = requests.post(f"{BASE}/step_task", params={"task_id": "task2"}, json=action)
 print(f"Order: status={r.json()['observation']['status_code']}")
 
-action = {"method": "POST", "endpoint": "/api/payments/refund", "headers": {"Authorization": f"Bearer {tok2}", "Idempotency-Key": "test-key-001", "Content-Type": "application/json"}, "body": {"order_id": "ORD-5519"}}
+action = {"method": "POST", "endpoint": "/api/payments/refund", "headers": {"Authorization": f"Bearer {tok2}", "Idempotency-Key": "test-key-001", "Content-Type": "application/json"}, "body": {"order_id": target_order_id}}
 r = requests.post(f"{BASE}/step_task", params={"task_id": "task2"}, json=action)
 print(f"Refund: status={r.json()['observation']['status_code']} done={r.json()['done']}")
 
 r = requests.post(f"{BASE}/grader", params={"task_id": "task2"})
+print(f"Grader: {r.json()}")
+
+# 5. Test Task 3 - pagination flow
+print("\n=== Task 3 ===")
+r = requests.post(f"{BASE}/reset_task", params={"task_id": "task3"})
+print(f"Reset: {r.status_code}")
+
+action = {"method": "POST", "endpoint": "/api/auth", "headers": {"Content-Type": "application/json"}, "body": {"username": "agent", "password": "secret123"}}
+r = requests.post(f"{BASE}/step_task", params={"task_id": "task3"}, json=action)
+tok3 = r.json()["observation"]["response_data"]["token"]
+print("Auth: got token")
+
+hasNextPage = True
+nextCursor = None
+pages = 0
+
+while hasNextPage:
+    action = {
+        "method": "POST",
+        "endpoint": "/api/graphql",
+        "headers": {"Authorization": f"Bearer {tok3}", "Content-Type": "application/json"},
+        "body": {"query": "{ systemLogs }", "variables": {"cursor": nextCursor}}
+    }
+    r = requests.post(f"{BASE}/step_task", params={"task_id": "task3"}, json=action)
+    resp = r.json()
+    obs = resp["observation"]
+    
+    if obs["status_code"] == 429:
+        wait_action = {"method": "WAIT", "endpoint": "", "headers": {}, "body": {}}
+        requests.post(f"{BASE}/step_task", params={"task_id": "task3"}, json=wait_action)
+        continue
+        
+    data = obs["response_data"].get("data", {}).get("systemLogs", {})
+    pageInfo = data.get("pageInfo", {})
+    hasNextPage = pageInfo.get("hasNextPage", False)
+    nextCursor = pageInfo.get("nextCursor")
+    pages += 1
+
+print(f"GraphQL: paginated {pages} pages")
+
+r = requests.post(f"{BASE}/grader", params={"task_id": "task3"})
 print(f"Grader: {r.json()}")
 
 # 5. Test Task 4 - webhook flow

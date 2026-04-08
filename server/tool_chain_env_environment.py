@@ -6,7 +6,7 @@ from . import mock_api
 # ── Task definitions ──────────────────────────────────────────
 TASKS = {
     "task1": {
-        "description": "Authenticate with /api/auth using the credentials provided, then retrieve the profile for user ID 42 from /api/crm/users/42.",
+        "description": "Authenticate with /api/auth using the credentials provided, then retrieve the profile for user ID {user_id} from /api/crm/users/{user_id}.",
         "max_steps": 8,
         "api_docs": (
             "POST /api/auth\n"
@@ -17,42 +17,35 @@ TASKS = {
             "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
             "  Returns: {\"id\": int, \"name\": string, \"email\": string, \"plan\": string}\n"
             "\n"
-            "Goal: Authenticate first, then GET /api/crm/users/42 with the Bearer token."
+            "Goal: Authenticate first, then GET /api/crm/users/{user_id} with the Bearer token."
         ),
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
-            "token": "tok_" + uuid.uuid4().hex[:12],
-            "users": {"42": {"id": 42, "name": "Jane Doe", "email": "jane@acme.com", "plan": "enterprise"}},
         },
-        "target_user_id": 42,
     },
     "task2": {
-        "description": "Use the token from /api/auth to get order ORD-5519 from /api/orders/ORD-5519, verify it is eligible for refund, then POST to /api/payments/refund with an Idempotency-Key header to prevent double-charging.",
+        "description": "Use the token from /api/auth to get order {order_id} from /api/orders/{order_id}, verify it is eligible for refund, then POST to /api/payments/refund with an Idempotency-Key header to prevent double-charging.",
         "max_steps": 12,
         "api_docs": (
             "POST /api/auth\n"
             "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
             "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
             "\n"
-            "GET /api/orders/{order_id}\n"
+            "GET /api/orders/{id}\n"
             "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
             "  Returns: {\"id\": string, \"amount\": float, \"eligible_for_refund\": bool, \"customer_id\": int}\n"
             "\n"
             "POST /api/payments/refund\n"
             "  Headers: {\"Authorization\": \"Bearer <token>\", \"Idempotency-Key\": \"<unique-string>\", \"Content-Type\": \"application/json\"}\n"
-            "  Body: {\"order_id\": \"ORD-5519\"}\n"
+            "  Body: {\"order_id\": \"{order_id}\"}\n"
             "  Returns: {\"success\": bool, \"refund_id\": string, \"amount\": float, \"status\": string}\n"
             "\n"
-            "Goal: Auth → GET order ORD-5519 → POST refund with Idempotency-Key header."
+            "Goal: Auth → GET order {order_id} → POST refund with Idempotency-Key header."
         ),
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
-            "token": "tok_" + uuid.uuid4().hex[:12],
-            "orders": {
-                "ORD-5519": {"id": "ORD-5519", "amount": 49.99, "eligible_for_refund": True, "customer_id": 42}
-            },
         },
     },
     "task3": {
@@ -77,8 +70,6 @@ TASKS = {
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
-            "token": "tok_" + uuid.uuid4().hex[:12],
-            "system_logs": [{"id": f"log_{i:03d}", "level": random.choice(["INFO","WARN","ERROR"]), "message": f"Event {i}", "ts": 1700000000 + i*60} for i in range(18)],
         },
     },
     "task4": {
@@ -120,9 +111,6 @@ TASKS = {
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
-            "token": "tok_" + uuid.uuid4().hex[:12],
-            "webhook_id": "wh_" + uuid.uuid4().hex[:12],
-            "webhook_secret": "whsec_" + uuid.uuid4().hex[:24],
         },
     },
 }
@@ -144,8 +132,39 @@ class ToolChainEnvironment:
         self._log        = []
         self._done       = False
         import copy
+        import string
+        
         self._episode_data = copy.deepcopy(self.task["episode_data"])
+        self._active_task = copy.deepcopy(self.task)
+        
         self._episode_data["current_step"] = 0
+        self._episode_data["token"] = "tok_" + uuid.uuid4().hex[:12]
+        
+        if self.task_id == "task1":
+            user_id = random.randint(100, 999)
+            self._episode_data["target_user_id"] = user_id
+            self._episode_data["users"] = {str(user_id): {"id": user_id, "name": "Dynamic User", "email": "user@acme.com", "plan": "enterprise"}}
+            
+            self._active_task["description"] = self._active_task["description"].replace("{user_id}", str(user_id))
+            self._active_task["api_docs"] = self._active_task["api_docs"].replace("{user_id}", str(user_id))
+            
+        elif self.task_id == "task2":
+            order_alph = "".join(random.choices(string.ascii_uppercase, k=3))
+            order_num = random.randint(1000, 9999)
+            order_id = f"{order_alph}-{order_num}"
+            self._episode_data["target_order_id"] = order_id
+            self._episode_data["orders"] = {order_id: {"id": order_id, "amount": round(random.uniform(10, 500), 2), "eligible_for_refund": True, "customer_id": random.randint(100, 999)}}
+            
+            self._active_task["description"] = self._active_task["description"].replace("{order_id}", str(order_id))
+            self._active_task["api_docs"] = self._active_task["api_docs"].replace("{order_id}", str(order_id))
+            
+        elif self.task_id == "task3":
+            self._episode_data["system_logs"] = [{"id": f"log_{i:03d}", "level": random.choice(["INFO","WARN","ERROR"]), "message": f"Event {i}", "ts": 1700000000 + i*60} for i in range(18)]
+
+        elif self.task_id == "task4":
+            self._episode_data["webhook_id"] = "wh_" + uuid.uuid4().hex[:12]
+            self._episode_data["webhook_secret"] = "whsec_" + uuid.uuid4().hex[:24]
+
         mock_api.reset_store(self._episode_data)
         mock_api._rate_limit_counter.update({"calls":0,"window_start_step":0})
         return self._make_obs(status_code=0, response_data={"message":"Episode started. Read task_description and api_docs."}, latency=0.0)
@@ -298,13 +317,16 @@ class ToolChainEnvironment:
         rl_reset = 0
         if status_code == 429:
             rl_reset = response_data.get("retry_after_steps", 5)
+        
+        active = getattr(self, "_active_task", self.task)
+        
         return ToolChainObservation(
             status_code=status_code,
             response_data=response_data,
             simulated_latency_ms=latency,
-            task_description=self.task["description"],
-            api_docs=self.task["api_docs"],
-            step_budget_remaining=self.task["max_steps"] - self._step,
+            task_description=active["description"],
+            api_docs=active["api_docs"],
+            step_budget_remaining=active["max_steps"] - self._step,
             rate_limit_reset_in=rl_reset,
             episode_log=self._log[-5:],
         )

@@ -16,6 +16,18 @@ def run_heuristic_episode(task_id: str) -> float:
     token = None
     step = 0
     next_cursor = None
+    
+    import re
+    task_desc = obs.get("task_description", "")
+    target_user_id = "42"
+    if task_id == "task1":
+        match = re.search(r"user ID (\d+)", task_desc)
+        if match: target_user_id = match.group(1)
+        
+    target_order_id = "ORD-5519"
+    if task_id == "task2":
+        match = re.search(r"order ([A-Z]{3}-\d{4})", task_desc)
+        if match: target_order_id = match.group(1)
 
     while not done and step < 30:
         step += 1
@@ -32,7 +44,7 @@ def run_heuristic_episode(task_id: str) -> float:
             else:
                 action = {
                     "method": "GET",
-                    "endpoint": "/api/crm/users/42",
+                    "endpoint": f"/api/crm/users/{target_user_id}",
                     "headers": {"Authorization": f"Bearer {token}"},
                     "body": None
                 }
@@ -48,7 +60,7 @@ def run_heuristic_episode(task_id: str) -> float:
             elif step == 2:
                 action = {
                     "method": "GET",
-                    "endpoint": "/api/orders/ORD-5519",
+                    "endpoint": f"/api/orders/{target_order_id}",
                     "headers": {"Authorization": f"Bearer {token}"},
                     "body": None
                 }
@@ -61,7 +73,7 @@ def run_heuristic_episode(task_id: str) -> float:
                         "Idempotency-Key": f"idem-{task_id}-{step}",
                         "Content-Type": "application/json"
                     },
-                    "body": {"order_id": "ORD-5519"}
+                    "body": {"order_id": target_order_id}
                 }
 
         elif task_id == "task3":
