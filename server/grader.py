@@ -8,15 +8,17 @@ def grade_episode(env: "ToolChainEnvironment") -> float:
     log  = env._log
     store = mock_api._store
 
+    raw_score = 0.01
     if task == "task1":
-        return _grade_data_fetch(log, store, env._episode_data)
-    if task == "task2":
-        return _grade_transaction(log, store)
-    if task == "task3":
-        return _grade_graphql(log, store, env._episode_data)
-    if task == "task4":
-        return _grade_webhook(log, store)
-    return 0.0
+        raw_score = _grade_data_fetch(log, store, env._episode_data)
+    elif task == "task2":
+        raw_score = _grade_transaction(log, store)
+    elif task == "task3":
+        raw_score = _grade_graphql(log, store, env._episode_data)
+    elif task == "task4":
+        raw_score = _grade_webhook(log, store)
+    
+    return max(0.01, min(0.99, float(raw_score)))
 
 def _grade_data_fetch(log, store, episode_data) -> float:
     """

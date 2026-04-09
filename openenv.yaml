@@ -7,7 +7,7 @@ description: >
   idempotency guarantees, and rate-limited paginated data retrieval.
 type: space
 runtime: fastapi
-app: app:app
+app: server.app:app
 port: 8000
 author: Vishaal-sathya
 version: "1.0.0"

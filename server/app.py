@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from server.tool_chain_env_environment import ToolChainEnvironment, TASKS
 from server.mock_api import router as mock_router
 from server.grader import grade_episode
@@ -20,6 +20,11 @@ app.include_router(mock_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/")
+@app.get("/web")
+def index():
+    return RedirectResponse(url="/docs")
 
 @app.get("/tasks")
 def list_tasks():
@@ -95,3 +100,10 @@ def action_schema():
 @app.get("/observation_schema")
 def observation_schema():
     return JSONResponse(content=ToolChainObservation.model_json_schema())
+
+def main():
+    import uvicorn
+    uvicorn.run("server.app:app", host="0.0.0.0", port=8000)
+
+if __name__ == "__main__":
+    main()

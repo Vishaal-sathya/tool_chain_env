@@ -1,3 +1,12 @@
+---
+title: ToolChain-Env
+emoji: 🔧
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8000
+---
+
 # ToolChain-Env: API Orchestration RL Environment
 
 Training agents to reliably use external APIs is one of the hardest open problems in agentic AI. Current benchmarks like ToolBench and APIBench evaluate agents on static datasets — they offer no episodic loop, no shaped reward, and no way to train with reinforcement learning. **ToolChain-Env** fills that gap: a fully episodic RL environment built around real-world API orchestration patterns including authentication flows, idempotent distributed transactions, rate-limited pagination, and webhook-driven event verification.
