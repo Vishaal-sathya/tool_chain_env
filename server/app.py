@@ -103,3 +103,6 @@ def action_schema():
 @app.get("/observation_schema")
 def observation_schema():
     return JSONResponse(content=ToolChainObservation.model_json_schema())
+
+if __name__ == "__main__":
+    main()
