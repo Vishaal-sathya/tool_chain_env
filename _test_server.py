@@ -17,10 +17,10 @@ tasks = r.json()
 print(f"2. GET /tasks => {r.status_code}, {len(tasks)} tasks:")
 for t in tasks:
     print(f"   - {t['id']} ({t['difficulty']}, max_steps={t['max_steps']})")
-assert r.status_code == 200 and len(tasks) == 4
+assert r.status_code == 200 and len(tasks) == 3
 
 # 3) POST /reset_task
-r = httpx.post(f"{base}/reset_task?task_id=task1")
+r = httpx.post(f"{base}/reset_task?task_id=data_fetch")
 obs = r.json()
 print(f"3. POST /reset_task => {r.status_code}")
 print(f"   task: {obs['task_description'][:70]}...")

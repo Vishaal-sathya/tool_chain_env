@@ -1,33 +1,42 @@
 import os
 import json
+import re
 import requests
 
 BASE = os.environ.get("ENV_BASE_URL", "http://localhost:8000")
-TASKS = ["task1", "task2", "task3", "task4"]
+TASKS = ["task1", "task2", "task3", "task4", "task5"]
+
+
+def _extract_episode_targets(reset_obs: dict) -> tuple[str | None, str | None]:
+    task_description = reset_obs.get("task_description", "")
+    user_match = re.search(r"user ID\s+(\d+)", task_description)
+    order_match = re.search(r"order\s+(ORD-[A-Z]{2}\d{4})", task_description)
+    target_user_id = user_match.group(1) if user_match else None
+    target_order_id = order_match.group(1) if order_match else None
+    return target_user_id, target_order_id
 
 def run_heuristic_episode(task_id: str) -> float:
     """
     Rule-based agent. Guaranteed nonzero scores.
     Knows the exact correct sequence for each task.
     """
-    reset_resp = requests.post(f"{BASE}/reset_task", params={"task_id": task_id})
-    obs = reset_resp.json()
+    # Use a seed for reproducibility in the baseline
+    reset_resp = requests.post(f"{BASE}/reset_task", params={"task_id": task_id, "seed": 42})
+    if reset_resp.status_code != 200:
+        print(f"  [RESET FAILED] Status: {reset_resp.status_code}, Response: {reset_resp.text}")
+        return 0.0
+    
+    # The initial observation after reset is in a different format
+    # for some reason, so we need to handle that.
+    initial_data = reset_resp.json()
+    obs = initial_data if "task_description" in initial_data else initial_data.get("observation", {})
+    
+    target_user_id, target_order_id = _extract_episode_targets(obs)
     done = False
     token = None
     step = 0
     next_cursor = None
-    
-    import re
-    task_desc = obs.get("task_description", "")
-    target_user_id = "42"
-    if task_id == "task1":
-        match = re.search(r"user ID (\d+)", task_desc)
-        if match: target_user_id = match.group(1)
-        
-    target_order_id = "ORD-5519"
-    if task_id == "task2":
-        match = re.search(r"order ([A-Z]{3}-\d{4})", task_desc)
-        if match: target_order_id = match.group(1)
+    task4_state: dict = {}
 
     while not done and step < 30:
         step += 1
@@ -42,6 +51,8 @@ def run_heuristic_episode(task_id: str) -> float:
                     "body": {"username": "agent", "password": "secret123"}
                 }
             else:
+                if not target_user_id:
+                    raise ValueError("Missing task1 target user id in reset observation")
                 action = {
                     "method": "GET",
                     "endpoint": f"/api/crm/users/{target_user_id}",
@@ -58,6 +69,8 @@ def run_heuristic_episode(task_id: str) -> float:
                     "body": {"username": "agent", "password": "secret123"}
                 }
             elif step == 2:
+                if not target_order_id:
+                    raise ValueError("Missing task2 target order id in reset observation")
                 action = {
                     "method": "GET",
                     "endpoint": f"/api/orders/{target_order_id}",
@@ -65,6 +78,8 @@ def run_heuristic_episode(task_id: str) -> float:
                     "body": None
                 }
             else:
+                if not target_order_id:
+                    raise ValueError("Missing task2 target order id in reset observation")
                 action = {
                     "method": "POST",
                     "endpoint": "/api/payments/refund",
@@ -116,9 +131,7 @@ def run_heuristic_episode(task_id: str) -> float:
                     "headers": {"Content-Type": "application/json"},
                     "body": {"username": "agent", "password": "secret123"}
                 }
-            elif not hasattr(run_heuristic_episode, '_wh_id') or step == 2:
-                if step == 2 and resp_data.get("webhook_id"):
-                    run_heuristic_episode._wh_id = resp_data["webhook_id"]
+            elif not task4_state.get("wh_id"):
                 action = {
                     "method": "POST",
                     "endpoint": "/api/webhooks/register",
@@ -128,9 +141,8 @@ def run_heuristic_episode(task_id: str) -> float:
                     },
                     "body": {"callback_url": "https://agent.example.com/webhook"}
                 }
-            elif step == 3:
-                wh_id = resp_data.get("webhook_id", getattr(run_heuristic_episode, '_wh_id', ''))
-                run_heuristic_episode._wh_id = wh_id
+            elif not task4_state.get("event_triggered"):
+                wh_id = task4_state.get("wh_id", "")
                 action = {
                     "method": "POST",
                     "endpoint": "/api/events/trigger",
@@ -140,19 +152,19 @@ def run_heuristic_episode(task_id: str) -> float:
                     },
                     "body": {"event_type": "order.completed", "webhook_id": wh_id}
                 }
-            elif step == 4:
-                wh_id = getattr(run_heuristic_episode, '_wh_id', '')
+            elif not task4_state.get("delivery"):
+                wh_id = task4_state.get("wh_id", "")
                 action = {
                     "method": "GET",
                     "endpoint": f"/api/webhooks/{wh_id}/deliveries",
                     "headers": {"Authorization": f"Bearer {token}"},
                     "body": None
                 }
-            elif step == 5:
-                deliveries = resp_data.get("deliveries", [])
-                if deliveries:
-                    d = deliveries[0]
-                    run_heuristic_episode._delivery = d
+            elif not task4_state.get("verified"):
+                d = task4_state.get("delivery")
+                if not d:
+                    action = {"method": "WAIT", "endpoint": "", "headers": {}, "body": None}
+                else:
                     action = {
                         "method": "POST",
                         "endpoint": "/api/webhooks/verify",
@@ -166,10 +178,8 @@ def run_heuristic_episode(task_id: str) -> float:
                             "payload": d.get("payload", {})
                         }
                     }
-                else:
-                    action = {"method": "WAIT", "endpoint": "", "headers": {}, "body": None}
-            elif step == 6:
-                wh_id = getattr(run_heuristic_episode, '_wh_id', '')
+            elif not task4_state.get("acknowledged"):
+                wh_id = task4_state.get("wh_id", "")
                 action = {
                     "method": "POST",
                     "endpoint": f"/api/webhooks/{wh_id}/acknowledge",
@@ -181,6 +191,32 @@ def run_heuristic_episode(task_id: str) -> float:
                 }
             else:
                 action = {"method": "WAIT", "endpoint": "", "headers": {}, "body": None}
+
+        elif task_id == "task5":
+            resp_data = obs.get("response_data", {})
+            # Task5 state machine:
+            # - start with discovery probe
+            # - exchange pkce_verifier for access token
+            # - call admin export with Bearer token
+            # Check access_token first so we don't regress to probe after OAuth.
+            if resp_data.get("access_token"):
+                dark_token = resp_data.get("access_token", "")
+                action = {
+                    "method": "GET",
+                    "endpoint": "/api/admin/export",
+                    "headers": {"Authorization": f"Bearer {dark_token}"},
+                    "body": None,
+                }
+            elif resp_data.get("pkce_verifier"):
+                pkce_verifier = resp_data.get("pkce_verifier", "")
+                action = {
+                    "method": "POST",
+                    "endpoint": "/api/dark/oauth/token",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {"pkce_verifier": pkce_verifier},
+                }
+            else:
+                action = {"method": "GET", "endpoint": "/api/dark/probe", "headers": {}, "body": None}
 
         result = requests.post(
             f"{BASE}/step_task",
@@ -194,6 +230,26 @@ def run_heuristic_episode(task_id: str) -> float:
         resp_data = obs.get("response_data", {})
         if isinstance(resp_data, dict) and "token" in resp_data:
             token = resp_data.get("token", token)
+
+        if task_id == "task4" and isinstance(resp_data, dict):
+            if "webhook_id" in resp_data:
+                task4_state["wh_id"] = resp_data["webhook_id"]
+            if obs.get("status_code") == 200 and "events/trigger" in action.get("endpoint", ""):
+                task4_state["event_triggered"] = True
+            deliveries = resp_data.get("deliveries", [])
+            if deliveries and not task4_state.get("delivery"):
+                task4_state["delivery"] = deliveries[0]
+            if resp_data.get("verified") is True:
+                task4_state["verified"] = True
+            if resp_data.get("acknowledged") is True:
+                task4_state["acknowledged"] = True
+
+        if task_id == "task5" and isinstance(resp_data, dict):
+            hints = resp_data.get("hints", [])
+            if hints and "pkce_verifier" not in resp_data:
+                m = re.search(r"pkce_([a-f0-9]{10})", json.dumps(resp_data))
+                if m:
+                    obs.setdefault("response_data", {})["pkce_verifier"] = f"pkce_{m.group(1)}"
 
         # Track GraphQL pagination cursor
         if task_id == "task3" and isinstance(resp_data, dict):

@@ -1,12 +1,13 @@
-import uuid, time, random, re
+import uuid, time, random, re, string
 from typing import Any, Dict, Tuple
 from models import ToolChainAction, ToolChainObservation, State
-from . import mock_api
+from server import mock_api
+from server.grader import grade_episode
 
 # ── Task definitions ──────────────────────────────────────────
 TASKS = {
     "task1": {
-        "description": "Authenticate with /api/auth using the credentials provided, then retrieve the profile for user ID {user_id} from /api/crm/users/{user_id}.",
+        "description": "Authenticate with /api/auth using the credentials provided, then retrieve the profile for the episode-specific user ID from /api/crm/users/{id}.",
         "max_steps": 8,
         "api_docs": (
             "POST /api/auth\n"
@@ -17,35 +18,39 @@ TASKS = {
             "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
             "  Returns: {\"id\": int, \"name\": string, \"email\": string, \"plan\": string}\n"
             "\n"
-            "Goal: Authenticate first, then GET /api/crm/users/{user_id} with the Bearer token."
+            "Goal: Authenticate first, then GET /api/crm/users/{id} with the Bearer token."
         ),
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
+            "token": "tok_" + uuid.uuid4().hex[:12],
+            "users": {},
         },
     },
     "task2": {
-        "description": "Use the token from /api/auth to get order {order_id} from /api/orders/{order_id}, verify it is eligible for refund, then POST to /api/payments/refund with an Idempotency-Key header to prevent double-charging.",
+        "description": "Use the token from /api/auth to get the episode-specific order from /api/orders/{order_id}, verify it is eligible for refund, then POST to /api/payments/refund with an Idempotency-Key header to prevent double-charging.",
         "max_steps": 12,
         "api_docs": (
             "POST /api/auth\n"
             "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
             "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
             "\n"
-            "GET /api/orders/{id}\n"
+            "GET /api/orders/{order_id}\n"
             "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
             "  Returns: {\"id\": string, \"amount\": float, \"eligible_for_refund\": bool, \"customer_id\": int}\n"
             "\n"
             "POST /api/payments/refund\n"
             "  Headers: {\"Authorization\": \"Bearer <token>\", \"Idempotency-Key\": \"<unique-string>\", \"Content-Type\": \"application/json\"}\n"
-            "  Body: {\"order_id\": \"{order_id}\"}\n"
+            "  Body: {\"order_id\": \"ORD-AA1234\"}\n"
             "  Returns: {\"success\": bool, \"refund_id\": string, \"amount\": float, \"status\": string}\n"
             "\n"
-            "Goal: Auth → GET order {order_id} → POST refund with Idempotency-Key header."
+            "Goal: Auth → GET the assigned order → POST refund with Idempotency-Key header."
         ),
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
+            "token": "tok_" + uuid.uuid4().hex[:12],
+            "orders": {},
         },
     },
     "task3": {
@@ -70,6 +75,8 @@ TASKS = {
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
+            "token": "tok_" + uuid.uuid4().hex[:12],
+            "system_logs": [{"id": f"log_{i:03d}", "level": random.choice(["INFO","WARN","ERROR"]), "message": f"Event {i}", "ts": 1700000000 + i*60} for i in range(18)],
         },
     },
     "task4": {
@@ -111,6 +118,19 @@ TASKS = {
         "episode_data": {
             "valid_user": "agent",
             "valid_pass": "secret123",
+            "token": "tok_" + uuid.uuid4().hex[:12],
+            "webhook_id": "wh_" + uuid.uuid4().hex[:12],
+            "webhook_secret": "whsec_" + uuid.uuid4().hex[:24],
+        },
+    },
+    "task5": {
+        "description": "No docs. Discover auth and hidden export endpoints, then retrieve admin export.",
+        "max_steps": 20,
+        "api_docs": "",
+        "episode_data": {
+            "valid_user": "agent",
+            "valid_pass": "secret123",
+            "token": "tok_" + uuid.uuid4().hex[:12],
         },
     },
 }
@@ -119,6 +139,8 @@ class ToolChainEnvironment:
     def __init__(self, task_id: str = "task1"):
         self.task_id   = task_id
         self.task      = TASKS[task_id]
+        self._task_description = self.task["description"]
+        self._task_api_docs = self.task["api_docs"]
         self._episode_id = ""
         self._step     = 0
         self._log: list = []
@@ -126,48 +148,93 @@ class ToolChainEnvironment:
         self._episode_data: dict = {}
 
     # ── OpenENV interface ─────────────────────────────────────
-    def reset(self) -> ToolChainObservation:
+    def reset(self, seed: int | None = None) -> ToolChainObservation:
+        if seed is not None:
+            random.seed(seed)
         self._episode_id = str(uuid.uuid4())
         self._step       = 0
         self._log        = []
         self._done       = False
         import copy
-        import string
-        
         self._episode_data = copy.deepcopy(self.task["episode_data"])
-        self._active_task = copy.deepcopy(self.task)
-        
-        self._episode_data["current_step"] = 0
-        self._episode_data["token"] = "tok_" + uuid.uuid4().hex[:12]
-        
+        self._task_description = self.task["description"]
+        self._task_api_docs = self.task["api_docs"]
+        self._episode_data["start_time"] = time.time()
+
         if self.task_id == "task1":
-            user_id = random.randint(100, 999)
-            self._episode_data["target_user_id"] = user_id
-            self._episode_data["users"] = {str(user_id): {"id": user_id, "name": "Dynamic User", "email": "user@acme.com", "plan": "enterprise"}}
-            
-            self._active_task["description"] = self._active_task["description"].replace("{user_id}", str(user_id))
-            self._active_task["api_docs"] = self._active_task["api_docs"].replace("{user_id}", str(user_id))
-            
+            target_user_id = random.randint(1, 999)
+            self._episode_data["target_user_id"] = target_user_id
+            self._episode_data["users"] = {
+                str(target_user_id): {
+                    "id": target_user_id,
+                    "name": f"User {target_user_id}",
+                    "email": f"user{target_user_id}@acme.com",
+                    "plan": "enterprise",
+                }
+            }
+            self._task_description = (
+                "Authenticate with /api/auth using the credentials provided, then retrieve the profile "
+                f"for user ID {target_user_id} from /api/crm/users/{target_user_id}."
+            )
+            self._task_api_docs = (
+                "POST /api/auth\n"
+                "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
+                "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
+                "\n"
+                "GET /api/crm/users/{id}\n"
+                "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
+                "  Returns: {\"id\": int, \"name\": string, \"email\": string, \"plan\": string}\n"
+                "\n"
+                f"Goal: Authenticate first, then GET /api/crm/users/{target_user_id} with the Bearer token."
+            )
         elif self.task_id == "task2":
-            order_alph = "".join(random.choices(string.ascii_uppercase, k=3))
-            order_num = random.randint(1000, 9999)
-            order_id = f"{order_alph}-{order_num}"
-            self._episode_data["target_order_id"] = order_id
-            self._episode_data["orders"] = {order_id: {"id": order_id, "amount": round(random.uniform(10, 500), 2), "eligible_for_refund": True, "customer_id": random.randint(100, 999)}}
-            
-            self._active_task["description"] = self._active_task["description"].replace("{order_id}", str(order_id))
-            self._active_task["api_docs"] = self._active_task["api_docs"].replace("{order_id}", str(order_id))
-            
-        elif self.task_id == "task3":
-            self._episode_data["system_logs"] = [{"id": f"log_{i:03d}", "level": random.choice(["INFO","WARN","ERROR"]), "message": f"Event {i}", "ts": 1700000000 + i*60} for i in range(18)]
+            target_order_id = "ORD-" + "".join(random.choices(string.ascii_uppercase, k=2)) + "".join(random.choices(string.digits, k=4))
+            self._episode_data["target_order_id"] = target_order_id
+            self._episode_data["orders"] = {
+                target_order_id: {
+                    "id": target_order_id,
+                    "amount": 49.99,
+                    "eligible_for_refund": True,
+                    "customer_id": random.randint(1, 999),
+                }
+            }
+            self._task_description = (
+                "Use the token from /api/auth to get order "
+                f"{target_order_id} from /api/orders/{target_order_id}, verify it is eligible for refund, then POST to "
+                "/api/payments/refund with an Idempotency-Key header to prevent double-charging."
+            )
+            self._task_api_docs = (
+                "POST /api/auth\n"
+                "  Body: {\"username\": \"agent\", \"password\": \"secret123\"}\n"
+                "  Returns: {\"token\": \"<bearer_token>\", \"expires_in\": 3600}\n"
+                "\n"
+                "GET /api/orders/{order_id}\n"
+                "  Headers: {\"Authorization\": \"Bearer <token>\"}\n"
+                "  Returns: {\"id\": string, \"amount\": float, \"eligible_for_refund\": bool, \"customer_id\": int}\n"
+                "\n"
+                "POST /api/payments/refund\n"
+                "  Headers: {\"Authorization\": \"Bearer <token>\", \"Idempotency-Key\": \"<unique-string>\", \"Content-Type\": \"application/json\"}\n"
+                f"  Body: {{\"order_id\": \"{target_order_id}\"}}\n"
+                "  Returns: {\"success\": bool, \"refund_id\": string, \"amount\": float, \"status\": string}\n"
+                "\n"
+                f"Goal: Auth -> GET order {target_order_id} -> POST refund with Idempotency-Key header."
+            )
+        elif self.task_id == "task5":
+            self._episode_data["dark_pkce_verifier"] = "pkce_" + uuid.uuid4().hex[:10]
+            self._episode_data["dark_oauth_token"] = "dark_tok_" + uuid.uuid4().hex[:16]
+            self._task_api_docs = "No API documentation is available for this task."
 
-        elif self.task_id == "task4":
-            self._episode_data["webhook_id"] = "wh_" + uuid.uuid4().hex[:12]
-            self._episode_data["webhook_secret"] = "whsec_" + uuid.uuid4().hex[:24]
+        # Critical: populate mock API store with this episode's data
+        from server import mock_api as _mock_api
+        _mock_api.reset_store(self._episode_data)
 
-        mock_api.reset_store(self._episode_data)
-        mock_api._rate_limit_counter.update({"calls":0,"window_start_step":0})
-        return self._make_obs(status_code=0, response_data={"message":"Episode started. Read task_description and api_docs."}, latency=0.0)
+        return ToolChainObservation(
+            task_description=self._task_description,
+            api_docs=self._task_api_docs,
+            step_budget_remaining=self.task["max_steps"] - self._step,
+            rate_limit_reset_in=0,
+            episode_log=self._log[-5:],
+        )
 
     def step(self, action: ToolChainAction) -> Tuple[ToolChainObservation, float, bool, Dict]:
         if self._done:
@@ -203,10 +270,19 @@ class ToolChainEnvironment:
 
         self._done = self._step >= self.task["max_steps"] or self._is_terminal(status, resp)
         if self._done:
-            reward += self._terminal_reward()
+            score = grade_episode(self)
+            reward += score * 0.5
 
+        partial_score = grade_episode(self)
+        info = {
+            "episode_id": self._episode_id,
+            "step": self._step,
+            "task_id": self.task_id,
+            "partial_score": round(float(partial_score), 4),
+            "rate_limit_calls_remaining": max(0, 3 - mock_api._rate_limit_counter.get("calls", 0)),
+        }
         obs = self._make_obs(status, resp, latency)
-        return obs, reward, self._done, {"episode_id": self._episode_id}
+        return obs, reward, self._done, info
 
     def state(self) -> State:
         return State(episode_id=self._episode_id, step_count=self._step)
@@ -248,6 +324,14 @@ class ToolChainEnvironment:
         elif method == "POST" and endpoint == "/api/graphql":
             status, resp = mock_api._graphql_handler(body, headers)
 
+        # Task 5 dark API discovery endpoints
+        elif method == "GET" and endpoint == "/api/dark/probe":
+            status, resp = mock_api._dark_probe_handler(headers)
+        elif method == "POST" and endpoint == "/api/dark/oauth/token":
+            status, resp = mock_api._dark_oauth_token_handler(body, headers)
+        elif method == "GET" and endpoint == "/api/admin/export":
+            status, resp = mock_api._dark_admin_export_handler(headers)
+
         # ── Task 4: Webhook endpoints ─────────────────────────
         # POST /api/webhooks/register
         elif method == "POST" and endpoint == "/api/webhooks/register":
@@ -275,58 +359,56 @@ class ToolChainEnvironment:
         return status, resp, latency
 
     def _step_reward(self, action: ToolChainAction, status: int, resp: dict) -> float:
-        r = 0.0
+        """Shaped reward for each step."""
+        reward = 0.0
+        # Generic rewards/penalties
         if status in (200, 201):
-            r += 0.15
-        elif status == 429:
-            r -= 0.10
-        elif status in (400, 404):
-            r -= 0.05
+            reward += 0.15
         elif status == 401:
-            r -= 0.08
-        if action.endpoint == "/api/payments/refund" and status == 200:
-            if action.headers.get("Idempotency-Key") or action.headers.get("X-Idempotency-Key"):
-                r += 0.20
-        # Webhook-specific rewards
-        if "webhooks/verify" in action.endpoint and status == 200:
-            r += 0.25  # big reward for correct HMAC verification
-        if "webhooks" in action.endpoint and "acknowledge" in action.endpoint and status == 200:
-            r += 0.15  # reward for completing the full webhook lifecycle
-        return r
+            reward -= 0.08
+        elif status in (400, 404):
+            reward -= 0.05
+        elif status == 429:
+            reward -= 0.10
 
-    def _terminal_reward(self) -> float:
-        from .grader import grade_episode
-        score = grade_episode(self)
-        return score * 0.5
+        # Task-specific rewards
+        if self.task_id == "task2":
+            idempotency_key = action.headers.get("Idempotency-Key") or action.headers.get("idempotency-key")
+            if status == 200 and "payments/refund" in action.endpoint and idempotency_key:
+                reward += 0.20
+        elif self.task_id == "task4":
+            if mock_api._store.get("signature_verified"):
+                reward += 0.25
+            if mock_api._store.get("webhook_acknowledged"):
+                reward += 0.15
+        return reward
 
     def _is_terminal(self, status: int, resp: dict) -> bool:
-        task = self.task_id
-        if task == "task1":
-            return status == 200 and "email" in resp
-        if task == "task2":
-            return mock_api._store.get("refund_processed", False)
-        if task == "task3":
-            collected = len(mock_api._store.get("collected_log_ids", set()))
-            total = len(self._episode_data.get("system_logs", []))
-            return collected >= total
-        if task == "task4":
+        """Terminal states: success, crash, or specific errors."""
+        if self.task_id == "task1":
+            return status == 200 and "crm/users" in self._log[-1]["endpoint"]
+        if self.task_id == "task2":
+            return status == 200 and "payments/refund" in self._log[-1]["endpoint"]
+        if self.task_id == "task3":
+            # Terminal if we've collected all logs
+            return len(mock_api._store.get("collected_log_ids", set())) >= len(self._episode_data.get("system_logs", []))
+        if self.task_id == "task4":
             return mock_api._store.get("webhook_acknowledged", False)
+        if self.task_id == "task5":
+            return mock_api._store.get("dark_export_retrieved", False)
         return False
 
-    def _make_obs(self, status_code, response_data, latency) -> ToolChainObservation:
+    def _make_obs(self, status: int, resp: dict, latency: float) -> ToolChainObservation:
         rl_reset = 0
-        if status_code == 429:
-            rl_reset = response_data.get("retry_after_steps", 5)
-        
-        active = getattr(self, "_active_task", self.task)
-        
+        if status == 429:
+            rl_reset = resp.get("retry_after_steps", 5)
         return ToolChainObservation(
-            status_code=status_code,
-            response_data=response_data,
+            status_code=status,
+            response_data=resp,
             simulated_latency_ms=latency,
-            task_description=active["description"],
-            api_docs=active["api_docs"],
-            step_budget_remaining=active["max_steps"] - self._step,
+            task_description=self._task_description,
+            api_docs=self._task_api_docs,
+            step_budget_remaining=self.task["max_steps"] - self._step,
             rate_limit_reset_in=rl_reset,
             episode_log=self._log[-5:],
         )

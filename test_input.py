@@ -2,6 +2,7 @@ import requests
 import json
 
 BASE_URL = "http://localhost:7860"
+__test__ = False
 
 def test_interactive():
     print("--- ToolChain-Env Interactive Test ---")

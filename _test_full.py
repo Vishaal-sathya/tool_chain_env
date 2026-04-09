@@ -1,7 +1,17 @@
 import requests
 import json
+import re
 
 BASE = "http://localhost:8000"
+
+
+def extract_episode_targets(reset_obs: dict) -> tuple[str | None, str | None]:
+	task_description = reset_obs.get("task_description", "")
+	user_match = re.search(r"user ID\s+(\d+)", task_description)
+	order_match = re.search(r"order\s+(ORD-[A-Z]{2}\d{4})", task_description)
+	target_user_id = user_match.group(1) if user_match else None
+	target_order_id = order_match.group(1) if order_match else None
+	return target_user_id, target_order_id
 
 # 1. Health
 r = requests.get(f"{BASE}/health")
@@ -15,6 +25,9 @@ print(f"Tasks: {r.status_code} ({len(r.json())} tasks)")
 print("\n=== Task 1 ===")
 r = requests.post(f"{BASE}/reset_task", params={"task_id": "task1"})
 obs = r.json()
+task1_user_id, _ = extract_episode_targets(obs)
+if not task1_user_id:
+	raise RuntimeError("Could not parse task1 user id from reset observation")
 print(f"Reset: {r.status_code}")
 
 action = {"method": "POST", "endpoint": "/api/auth", "headers": {"Content-Type": "application/json"}, "body": {"username": "agent", "password": "secret123"}}
@@ -23,9 +36,7 @@ step1 = r.json()
 token = step1["observation"]["response_data"].get("token", "")
 print(f"Step1 auth: status={step1['observation']['status_code']} token={token[:20]}...")
 
-import re
-target_user_id = re.search(r"user ID (\d+)", obs["task_description"]).group(1)
-action2 = {"method": "GET", "endpoint": f"/api/crm/users/{target_user_id}", "headers": {"Authorization": f"Bearer {token}"}, "body": None}
+action2 = {"method": "GET", "endpoint": f"/api/crm/users/{task1_user_id}", "headers": {"Authorization": f"Bearer {token}"}, "body": None}
 r = requests.post(f"{BASE}/step_task", params={"task_id": "task1"}, json=action2)
 step2 = r.json()
 print(f"Step2 CRM: status={step2['observation']['status_code']} done={step2['done']}")
@@ -36,7 +47,10 @@ print(f"Grader: {r.json()}")
 # 4. Test Task 2
 print("\n=== Task 2 ===")
 r = requests.post(f"{BASE}/reset_task", params={"task_id": "task2"})
-obs2 = r.json()
+task2_reset_obs = r.json()
+_, task2_order_id = extract_episode_targets(task2_reset_obs)
+if not task2_order_id:
+	raise RuntimeError("Could not parse task2 order id from reset observation")
 print(f"Reset: {r.status_code}")
 
 action = {"method": "POST", "endpoint": "/api/auth", "headers": {"Content-Type": "application/json"}, "body": {"username": "agent", "password": "secret123"}}
@@ -44,17 +58,17 @@ r = requests.post(f"{BASE}/step_task", params={"task_id": "task2"}, json=action)
 tok2 = r.json()["observation"]["response_data"]["token"]
 print(f"Auth: got token")
 
-target_order_id = re.search(r"order ([A-Z]{3}-\d{4})", obs2["task_description"]).group(1)
-action = {"method": "GET", "endpoint": f"/api/orders/{target_order_id}", "headers": {"Authorization": f"Bearer {tok2}"}, "body": None}
+action = {"method": "GET", "endpoint": f"/api/orders/{task2_order_id}", "headers": {"Authorization": f"Bearer {tok2}"}, "body": None}
 r = requests.post(f"{BASE}/step_task", params={"task_id": "task2"}, json=action)
 print(f"Order: status={r.json()['observation']['status_code']}")
 
-action = {"method": "POST", "endpoint": "/api/payments/refund", "headers": {"Authorization": f"Bearer {tok2}", "Idempotency-Key": "test-key-001", "Content-Type": "application/json"}, "body": {"order_id": target_order_id}}
+action = {"method": "POST", "endpoint": "/api/payments/refund", "headers": {"Authorization": f"Bearer {tok2}", "Idempotency-Key": "test-key-001", "Content-Type": "application/json"}, "body": {"order_id": task2_order_id}}
 r = requests.post(f"{BASE}/step_task", params={"task_id": "task2"}, json=action)
 print(f"Refund: status={r.json()['observation']['status_code']} done={r.json()['done']}")
 
 r = requests.post(f"{BASE}/grader", params={"task_id": "task2"})
 print(f"Grader: {r.json()}")
+
 
 # 5. Test Task 3 - pagination flow
 print("\n=== Task 3 ===")
@@ -96,6 +110,7 @@ print(f"GraphQL: paginated {pages} pages")
 
 r = requests.post(f"{BASE}/grader", params={"task_id": "task3"})
 print(f"Grader: {r.json()}")
+
 
 # 5. Test Task 4 - webhook flow
 print("\n=== Task 4 ===")

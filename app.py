@@ -23,10 +23,11 @@ def health():
 
 @app.get("/tasks")
 def list_tasks():
+    diff_map = ["easy", "medium", "hard", "expert", "legendary"]
     return JSONResponse(content=[
         {
             "id": tid,
-            "difficulty": ["easy", "medium", "hard", "expert"][i] if i < 4 else "expert",
+            "difficulty": diff_map[i] if i < len(diff_map) else "expert",
             "description": cfg["description"],
             "max_steps": cfg["max_steps"],
             "action_schema": ToolChainAction.model_json_schema(),
@@ -35,10 +36,10 @@ def list_tasks():
     ])
 
 @app.post("/reset_task")
-def reset_task(task_id: str = Query("task1")):
+def reset_task(task_id: str = Query("task1"), seed: int | None = Query(None)):
     env = ToolChainEnvironment(task_id=task_id)
     _envs[task_id] = env
-    obs = env.reset()
+    obs = env.reset(seed=seed)
     return JSONResponse(content=obs.model_dump())
 
 @app.post("/step_task")
@@ -59,8 +60,15 @@ def state_task(task_id: str = Query("task1")):
 @app.post("/grader")
 def grader(task_id: str = Query("task1")):
     env = _get_or_create(task_id)
+    if env._step == 0:
+        return JSONResponse(content={"score": 0.0, "task_id": task_id, "reason": "No steps taken", "grader_fingerprint": ["step_count"]})
     score = grade_episode(env)
-    return JSONResponse(content={"score": round(score, 4), "task_id": task_id})
+    return JSONResponse(content={
+        "score": round(score, 4),
+        "task_id": task_id,
+        "reason": "Graded episode",
+        "grader_fingerprint": ["log", "store"],
+    })
 
 @app.post("/baseline")
 def baseline():
@@ -77,8 +85,8 @@ def baseline():
 
 # OpenEnv spec aliases
 @app.post("/reset")
-def reset(task_id: str = Query("task1")):
-    return reset_task(task_id=task_id)
+def reset(task_id: str = Query("task1"), seed: int | None = Query(None)):
+    return reset_task(task_id=task_id, seed=seed)
 
 @app.post("/step")
 def step(action: ToolChainAction, task_id: str = Query("task1")):

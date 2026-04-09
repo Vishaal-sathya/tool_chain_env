@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from .tool_chain_env_environment import ToolChainEnvironment
+    from server.tool_chain_env_environment import ToolChainEnvironment
 from . import mock_api
 
 def grade_episode(env: "ToolChainEnvironment") -> float:
@@ -11,11 +11,13 @@ def grade_episode(env: "ToolChainEnvironment") -> float:
     if task == "task1":
         return _grade_data_fetch(log, store, env._episode_data)
     if task == "task2":
-        return _grade_transaction(log, store)
+        return _grade_transaction(log, store, env._episode_data)
     if task == "task3":
         return _grade_graphql(log, store, env._episode_data)
     if task == "task4":
         return _grade_webhook(log, store)
+    if task == "task5":
+        return _grade_dark_api(log, store)
     return 0.0
 
 def _grade_data_fetch(log, store, episode_data) -> float:
@@ -35,27 +37,56 @@ def _grade_data_fetch(log, store, episode_data) -> float:
     if not success_crm:
         return 0.5
     # Check they retrieved the correct user
-    target_id = str(episode_data.get("target_user_id", 42))
+    target_user_id = episode_data.get("target_user_id")
+    if target_user_id is None:
+        return 0.0
+    target_id = str(target_user_id)
     correct = any(target_id in e["endpoint"] for e in success_crm)
-    return 1.0 if correct else 0.7
+    return 1.0 if correct else 0.5
 
-def _grade_transaction(log, store) -> float:
+def _grade_transaction(log, store, episode_data) -> float:
     """
     0.0 — nothing or crash
     0.3 — got order data but never attempted refund
     0.8 — refund processed but no Idempotency-Key header
     1.0 — refund processed with Idempotency-Key
     """
-    got_order = any("orders" in e["endpoint"] and e["status_code"] == 200 for e in log)
+    target_order_id = episode_data.get("target_order_id")
+    if not target_order_id:
+        return 0.0
+
+    target_endpoint = f"/api/orders/{target_order_id}"
+    got_order = any(
+        e["status_code"] == 200 and e["endpoint"] == target_endpoint
+        for e in log
+    )
     if not got_order:
         return 0.0
     refund_attempted = any("payments/refund" in e["endpoint"] for e in log)
     if not refund_attempted:
         return 0.3
+
+    correct_refund_attempt = any(
+        e["endpoint"] == "/api/payments/refund"
+        and isinstance(e.get("body"), dict)
+        and e["body"].get("order_id") == target_order_id
+        for e in log
+    )
+    if not correct_refund_attempt:
+        return 0.3
+
     refund_ok = store.get("refund_processed", False)
     if not refund_ok:
         return 0.3
     had_idempotency = not store.get("refund_missing_idempotency", False)
+    
+    # Anti-exploit: check for replay attacks
+    used_keys = store.get("used_idempotency_keys", set())
+    if len(used_keys) > 1 and had_idempotency:
+        # They used multiple keys for the same refund, which is suspicious
+        # but not strictly wrong. Let's not penalize for now but could be a feature.
+        pass
+
     return 1.0 if had_idempotency else 0.8
 
 def _grade_graphql(log, store, episode_data) -> float:
@@ -120,3 +151,28 @@ def _grade_webhook(log, store) -> float:
         return 0.8
 
     return 1.0
+
+
+def _grade_dark_api(log, store) -> float:
+    """
+    0.0 — no meaningful exploration
+    0.2 — probed discovery endpoint
+    0.5 — obtained dark oauth token
+    0.8 — attempted admin export with auth
+    1.0 — retrieved export payload
+    """
+    probed = store.get("dark_probe_seen", False)
+    oauth = store.get("dark_oauth_completed", False)
+    export_retrieved = store.get("dark_export_retrieved", False)
+
+    export_attempted = any(e.get("endpoint") == "/api/admin/export" for e in log)
+
+    if export_retrieved:
+        return 1.0
+    if export_attempted and oauth:
+        return 0.8
+    if oauth:
+        return 0.5
+    if probed:
+        return 0.2
+    return 0.0
